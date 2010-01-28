@@ -39,7 +39,11 @@ module PacketNest
     # Recurse to the next level when appropriate
     next_inspect = ''
     if @content.class <= String
-      next_inspect = "[Data #{@content.length}]"
+      if @content.length > 0
+        next_inspect = "[Data #{@content.length}]"
+      else
+        next_inspect = ''
+      end
     else
       next_inspect = @content.inspect()
     end
@@ -65,6 +69,66 @@ end  # of module PacketNest
 
 ######  Packet Headers in Descending Order  ######
 
+# Class that holds TCP packets
+class TCPPacket
+
+  include PacketNest
+
+  def initialize(data)
+    @error = nil
+    hdr_len = (data[12].to_i >> 4) * 4
+    if data.length < hdr_len or hdr_len < 20
+      @error = "Truncated"
+      @content = data
+      return nil
+    end
+
+    # Grab our header.  Next layer is always content for TCP.
+    @hdr = data[0,hdr_len]
+    data[0,hdr_len] = ''
+    @content = data
+  end
+
+  def details()
+    return @error if @error
+    src = (@hdr[0] << 8) + @hdr[1]
+    dst = (@hdr[2] << 8) + @hdr[3]
+    "#{src} > #{dst}"
+  end
+
+end  # of class TCPPacket
+
+
+# Class that holds UDP packets
+class UDPPacket
+
+  include PacketNest
+
+  def initialize(data)
+    @error = nil
+    hdr_len = 8
+    if data.length < hdr_len
+      @error = "Truncated"
+      @content = data
+      return nil
+    end
+
+    # Grab our header.  Next layer is always content for UDP.
+    @hdr = data[0,hdr_len]
+    data[0,hdr_len] = ''
+    @content = data
+  end
+
+  def details()
+    return @error if @error
+    src = (@hdr[0] << 8) + @hdr[1]
+    dst = (@hdr[2] << 8) + @hdr[3]
+    "#{src} > #{dst}"
+  end
+
+end  # of class UDPPacket
+
+
 # Class that holds IP packets
 class IPPacket
 
@@ -73,25 +137,34 @@ class IPPacket
   def initialize(data)
     @error = nil
     hdr_len = (data[0].to_i - 0x40) * 4
-    if data.length < hdr_len or hdr_len < 20
+    total_length = (data[2].to_i << 8) + data[3].to_i
+    if data.length < hdr_len or hdr_len < 20 or total_length > data.length
       @error = "Truncated"
       @content = data
       return nil
     end
 
     # Grab our header
+    data[total_length..-1] = ''
     @hdr = data[0,hdr_len]
     data[0,hdr_len] = ''
     next_layer = @hdr[9]
 
     # Examine the protocol field for types we recognize
-    @content = data
+    if next_layer == 6
+      @content = TCPPacket.new(data)
+    elsif next_layer == 17
+      @content = UDPPacket.new(data)
+    else
+      @content = data
+    end
   end
 
   def details()
+    return @error if @error
     src = IPAddr.new(ntorl(@hdr[12,4]), Socket::AF_INET)
     dst = IPAddr.new(ntorl(@hdr[16,4]), Socket::AF_INET)
-    "#{src} > #{dst}"
+    "#{src}:#{dst}"
   end
 
 end  # of class IPPacket
@@ -257,7 +330,7 @@ class MangleWindow < FXMainWindow
   # Redraw the list of packets in our buffer completely
   def redraw_packets()
     @cols[0].clearItems()
-    num = 0
+    num = 1
     @packets.each do |packet|
       @cols[0].appendItem("#{num}: #{packet.inspect}")
       num += 1
