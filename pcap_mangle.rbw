@@ -50,6 +50,23 @@ module PacketNest
     "#{proto}#{next_inspect}"
   end
 
+  # The checksum better have been recomputed already when this is called
+  # for TCP and UDP and IP.
+  def to_s
+    @hdr + @content.to_s
+  end
+
+  # If we're a packet class that doesn't offer checksumming, just forward
+  # the request deeper within our nest.  Maybe somebody wants it!
+  def checksum!
+    @content.checksum! unless @content.class <= String
+  end
+
+end  # of module PacketNest
+
+# Module for endian/integer conversions
+module EndianMess
+
   # Net to Ruby Long - Convert a host-byte-order string into a Fixnum
   def htorl(str)
     num = 0
@@ -64,7 +81,17 @@ module PacketNest
     return num
   end
 
-end  # of module PacketNest
+  # Ruby Long to Host - Convert a Fixnum to a 4-byte host-byte-order string
+  def rltoh(num)
+    str = ''
+    4.times do
+      str << (num & 0xFF).chr
+      num >>= 8
+    end
+    str
+  end
+
+end  # of module EndianMess
 
 
 ######  Packet Headers in Descending Order  ######
@@ -73,9 +100,11 @@ end  # of module PacketNest
 class TCPPacket
 
   include PacketNest
+  include EndianMess
 
   def initialize(data)
     @error = nil
+    @hdr = ''
     hdr_len = (data[12].to_i >> 4) * 4
     if data.length < hdr_len or hdr_len < 20
       @error = "Truncated"
@@ -96,6 +125,36 @@ class TCPPacket
     "#{src} > #{dst}"
   end
 
+  # Recalculate the checksum field for this TCP packet.  Thanks to the
+  # TCP psuedo-header, the 8 bytes of the IP header containing source and
+  # destination address need to be provided.  *sigh*  Layering violations.
+  def checksum!(ip_bytes)
+    return nil if @error
+
+    # Gather all the data on which we'll be calculating our checksum
+    data = @hdr + @content.to_s
+    data[16,2] = "\x00\x00"  # zero the checksum initially
+    len = data.length
+    data << "\x00" if len & 1 == 1
+    data << ((len >> 8).chr + (len & 0xFF).chr)
+    data << ip_bytes
+
+    # Start calculating the checksum, 2 bytes at a time, starting with 6
+    checksum = 6    # TCP protocol
+    pos = 0
+    while pos < data.length do
+      checksum += (data[pos] << 8) + data[pos+1];
+      if checksum > 0xFFFF
+        checksum += 1
+        checksum &= 0xFFFF
+      end
+      pos += 2
+    end
+    checksum = checksum ^ 0xFFFF
+    @hdr[16] = (checksum >> 8)
+    @hdr[17] = (checksum & 0xFF)
+  end
+
 end  # of class TCPPacket
 
 
@@ -103,9 +162,11 @@ end  # of class TCPPacket
 class UDPPacket
 
   include PacketNest
+  include EndianMess
 
   def initialize(data)
     @error = nil
+    @hdr = ''
     hdr_len = 8
     if data.length < hdr_len
       @error = "Truncated"
@@ -126,6 +187,12 @@ class UDPPacket
     "#{src} > #{dst}"
   end
 
+  # Right now checksum just gets zeroed, which is fine for UDP
+  def checksum!(ip_bytes = nil)
+    return nil if @error
+    @hdr[6,2] = "\x00\x00"
+  end
+
 end  # of class UDPPacket
 
 
@@ -133,9 +200,11 @@ end  # of class UDPPacket
 class IPPacket
 
   include PacketNest
+  include EndianMess
 
   def initialize(data)
     @error = nil
+    @hdr = ''
     hdr_len = (data[0].to_i - 0x40) * 4
     total_length = (data[2].to_i << 8) + data[3].to_i
     if data.length < hdr_len or hdr_len < 20 or total_length > data.length
@@ -167,6 +236,32 @@ class IPPacket
     "#{src}:#{dst}"
   end
 
+  def checksum!
+    return nil if @error
+    @hdr[10,2] = "\x00\x00"  # zero the checksum initially
+
+    # Calculate the IP checksum
+    checksum = 0
+    pos = 0
+    while pos < @hdr.length do
+      checksum += (@hdr[pos] << 8) + @hdr[pos+1];
+      if checksum > 0xFFFF
+        checksum += 1
+        checksum &= 0xFFFF
+      end
+      pos += 2
+    end
+    checksum = checksum ^ 0xFFFF
+    @hdr[10] = (checksum >> 8)
+    @hdr[11] = (checksum & 0xFF)
+
+    # If this packet contains TCP or UDP, tell it to checksum as well!
+    # And because we're nice, give it information it needs for psuedo-header.
+    if @content.class <= TCPPacket or @content.class <= UDPPacket
+      @content.checksum!(@hdr[12,8])
+    end
+  end    
+
 end  # of class IPPacket
 
 
@@ -174,10 +269,12 @@ end  # of class IPPacket
 class EthernetPacket
 
   include PacketNest
+  include EndianMess
 
   # Pull off our own data, then construct interior headers we recognize
   def initialize(data)
     @error = nil
+    @hdr = ''
     if data.length < 14
       @error = "Truncated"
       @content = data
@@ -213,6 +310,7 @@ end  # of class EthernetPacket
 class Packet
 
   include PacketNest
+  include EndianMess
 
   # If src is a File object, read one frame from it.
   # last_time contains the timestamp of the previous frame as a float.
@@ -247,6 +345,14 @@ class Packet
     return seconds
   end
 
+  # This puts the length of the packet and the length captured onto the
+  # frame data that gets returned, but NOT the timestamp.  Keep that in mind.
+  def to_s
+    data = @content.to_s
+    @orig_len = data.length   # Should this really be here?
+    rltoh(@orig_len) + rltoh(data.length) + data
+  end
+
 end  # of class Packet
 
 
@@ -258,6 +364,8 @@ class MangleWindow < FXMainWindow
   WINDOW_WIDTH  = 480
   WINDOW_TITLE  = "Pcap Mangle"
   BUTTON_WIDTH  = 90
+
+  include EndianMess
 
   def create
     super
@@ -276,7 +384,7 @@ class MangleWindow < FXMainWindow
     button_open.connect(SEL_COMMAND) { load_pcap() }
     button_save = FXButton.new(button_list, "&Save", :opts => LAYOUT_SIDE_TOP |
       FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
-    #button_save.connect(SEL_COMMAND) { save_pcap() }
+    button_save.connect(SEL_COMMAND) { save_pcap() }
 
     # Table which contains our packet view
     @table = FXHorizontalFrame.new(packer, :opts => LAYOUT_FILL | FRAME_SUNKEN |
@@ -295,6 +403,31 @@ class MangleWindow < FXMainWindow
     @start_time = 0.0
   end  # of initialize
 
+  # Choose a file into which we save our packet capture
+  def save_pcap
+    return nil if @packets.empty?
+    dialog = FXFileDialog.new(self, "Save Pcap File")
+    dialog.patternList = [ "Packet Capture (*.pcap)" ]
+    file = nil
+    file = dialog.filename.first if dialog.execute == 1
+    return nil unless file
+
+    # Save our packet list to a file, one packet at a time.
+    File.open(file, 'w') do |pcap|
+      pcap.print(@pcap_header)
+      timestamp = @start_time
+      @packets.each do |pkt|
+pkt.checksum!
+        timestamp += pkt.time_offset
+        pkt = pkt.to_s
+        seconds = rltoh(timestamp.to_i)
+        microseconds = rltoh(((timestamp - timestamp.floor) * 1000000).to_i)
+        pcap.print("#{seconds}#{microseconds}")
+        pcap.print(pkt)
+      end
+    end
+  end
+
   # Load the given file or, absent that, launch a modal file dialog
   def load_pcap(*files)
     if files.empty?
@@ -307,11 +440,13 @@ class MangleWindow < FXMainWindow
     
     # We have our file list, let's open it.  Destroy whatever we have now.
     @packets = []
+    @pcap_header = nil
     files.each do |fname|
       pkt_list = []
       timestamp = 0.0
       File.open(fname) do |pcap|
         hdr = pcap.read(24)
+        @pcap_header = hdr if @packets.empty?
         file_len = pcap.lstat.size - 15
         while pcap.pos < file_len do
           pkt_list << Packet.new(pcap, timestamp)
