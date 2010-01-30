@@ -17,9 +17,39 @@ require 'ipaddr'
 include Fox
 
 
-# Module for mixing in that assists with recursively examining packets and
+# Module for endian/integer conversions
+module EndianMess
+
+  # Net to Ruby Long - Convert a host-byte-order string into a Fixnum
+  def htorl(str)
+    num = 0
+    str.reverse.each_byte { |x| num = (num << 8) + x }
+    return num
+  end
+
+  # Net to Ruby Long - Convert a network-byte-order string into a Fixnum
+  def ntorl(str)
+    num = 0
+    str.each_byte { |x| num = (num << 8) + x }
+    return num
+  end
+
+  # Ruby Long to Host - Convert a Fixnum to a 4-byte host-byte-order string
+  def rltoh(num)
+    str = ''
+    4.times do
+      str << (num & 0xFF).chr
+      num >>= 8
+    end
+    str
+  end
+
+end  # of module EndianMess
+
+# Top-level class that assists with recursively examining packets and
 # their contained headers
-module PacketNest
+class NestedPacket
+  include EndianMess
 
   # Recurses until @content is merely a String.  Grabs current-level content
   # until then by calling the details() method.
@@ -62,45 +92,13 @@ module PacketNest
     @content.checksum! unless @content.class <= String
   end
 
-end  # of module PacketNest
-
-# Module for endian/integer conversions
-module EndianMess
-
-  # Net to Ruby Long - Convert a host-byte-order string into a Fixnum
-  def htorl(str)
-    num = 0
-    str.reverse.each_byte { |x| num = (num << 8) + x }
-    return num
-  end
-
-  # Net to Ruby Long - Convert a network-byte-order string into a Fixnum
-  def ntorl(str)
-    num = 0
-    str.each_byte { |x| num = (num << 8) + x }
-    return num
-  end
-
-  # Ruby Long to Host - Convert a Fixnum to a 4-byte host-byte-order string
-  def rltoh(num)
-    str = ''
-    4.times do
-      str << (num & 0xFF).chr
-      num >>= 8
-    end
-    str
-  end
-
-end  # of module EndianMess
+end  # of class NestedPacket
 
 
 ######  Packet Headers in Descending Order  ######
 
 # Class that holds TCP packets
-class TCPPacket
-
-  include PacketNest
-  include EndianMess
+class TCPPacket < NestedPacket
 
   def initialize(data)
     @error = nil
@@ -159,10 +157,7 @@ end  # of class TCPPacket
 
 
 # Class that holds UDP packets
-class UDPPacket
-
-  include PacketNest
-  include EndianMess
+class UDPPacket < NestedPacket
 
   def initialize(data)
     @error = nil
@@ -197,10 +192,7 @@ end  # of class UDPPacket
 
 
 # Class that holds IP packets
-class IPPacket
-
-  include PacketNest
-  include EndianMess
+class IPPacket < NestedPacket
 
   def initialize(data)
     @error = nil
@@ -266,10 +258,7 @@ end  # of class IPPacket
 
 
 # Class that holds Ethernet packets.  Pretty simple, really.
-class EthernetPacket
-
-  include PacketNest
-  include EndianMess
+class EthernetPacket < NestedPacket
 
   # Pull off our own data, then construct interior headers we recognize
   def initialize(data)
@@ -307,10 +296,7 @@ end  # of class EthernetPacket
 # Class that defines an individual packet (frame would be a more precise
 # term).  Translations on this packet are performed as methods within this
 # class.
-class Packet
-
-  include PacketNest
-  include EndianMess
+class Packet < NestedPacket
 
   # If src is a File object, read one frame from it.
   # last_time contains the timestamp of the previous frame as a float.
@@ -581,7 +567,6 @@ class MangleWindow < FXMainWindow
   end
 
 end  # of class MangleWindow
-
 
 
 # Start the application
