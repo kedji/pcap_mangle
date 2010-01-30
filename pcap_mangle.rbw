@@ -51,6 +51,9 @@ end  # of module EndianMess
 class NestedPacket
   include EndianMess
 
+  attr_reader :content
+  attr_writer :content
+
   # Recurses until @content is merely a String.  Grabs current-level content
   # until then by calling the details() method.
   def inspect
@@ -92,6 +95,28 @@ class NestedPacket
     @content.checksum! unless @content.class <= String
   end
 
+  # Nested packets that retain @hdr + @content and nothing else can simply
+  # use this function to recursively calculate length
+  def length
+    @hdr.length + @content.length
+  end
+
+  # Pass fragmentation requests down until we hit an appropriate level 3
+  # protocol.  On the way back up, if fragmentation has occurred then an
+  # array will be returned.  Prepend our header to each element and return.
+  def fragment!(max_frags)
+    return nil if @error or @content.class <= String
+    frags = @content.fragment!(max_frags)
+    if frags
+      frags.collect! do |x|
+        frag = self.dup
+        frag.content = x
+        frag
+      end
+    end
+    return frags
+  end
+
 end  # of class NestedPacket
 
 
@@ -100,9 +125,16 @@ end  # of class NestedPacket
 # Class that holds TCP packets
 class TCPPacket < NestedPacket
 
-  def initialize(data)
+  def initialize(data, fragmented = false)
     @error = nil
     @hdr = ''
+    if fragmented
+      @error = "Fragment"
+      @content = data
+      return nil
+    end
+    
+    # Validate the length of the header
     hdr_len = (data[12].to_i >> 4) * 4
     if data.length < hdr_len or hdr_len < 20
       @error = "Truncated"
@@ -159,9 +191,16 @@ end  # of class TCPPacket
 # Class that holds UDP packets
 class UDPPacket < NestedPacket
 
-  def initialize(data)
+  def initialize(data, fragmented = false)
     @error = nil
     @hdr = ''
+    if fragmented
+      @error = "Fragment"
+      @content = data
+      return nil
+    end
+
+    # Validate the header's presence
     hdr_len = 8
     if data.length < hdr_len
       @error = "Truncated"
@@ -210,12 +249,13 @@ class IPPacket < NestedPacket
     @hdr = data[0,hdr_len]
     data[0,hdr_len] = ''
     next_layer = @hdr[9]
+    fragmented = (@hdr[6] & 0x3F) + @hdr[7] > 0
 
     # Examine the protocol field for types we recognize
     if next_layer == 6
-      @content = TCPPacket.new(data)
+      @content = TCPPacket.new(data, fragmented)
     elsif next_layer == 17
-      @content = UDPPacket.new(data)
+      @content = UDPPacket.new(data, fragmented)
     else
       @content = data
     end
@@ -304,6 +344,7 @@ class Packet < NestedPacket
     @time_offset = 0.0       # seconds since previous frame
     @content = nil           # nested collection of headers and data
     @orig_len = 0            # original length of original packet
+    @error = nil
 
     # Handle reading one frame from a file
     if src.class <= File
@@ -339,10 +380,44 @@ class Packet < NestedPacket
     rltoh(@orig_len) + rltoh(data.length) + data
   end
 
+  # Frame header, before any packet content, is 16 bytes
+  def length
+    16 + @content.length
+  end
 end  # of class Packet
 
 
 ######  Graphical User Interface  ######
+
+# Packet fragmentation dialog
+class FragmentDialog < FXDialogBox
+  PAD = 12
+
+  def initialize(owner)
+    super(owner, "Fragmentation", DECOR_TITLE | DECOR_BORDER)
+    
+    # Create the top container
+    options = FXHorizontalFrame.new(self, LAYOUT_SIDE_TOP | FRAME_NONE |
+      LAYOUT_FILL_X | PACK_UNIFORM_WIDTH, :padLeft => PAD, :padRight => PAD,
+      :padTop => PAD, :padBottom => PAD)
+
+    # Radio buttons go on the left
+    radio = FXVerticalFrame.new(options, LAYOUT_SIDE_LEFT | FRAME_NONE |
+      LAYOUT_FILL_Y, :padLeft => PAD, :padRight => PAD)
+    frag_target = FXDataTarget.new(0)
+    @random = FXRadioButton.new(radio, "Random", frag_target,
+      FXDataTarget::ID_OPTION + 0, ICON_BEFORE_TEXT | LAYOUT_SIDE_TOP)
+    @mtu = FXRadioButton.new(radio, "MTU", frag_target,
+      FXDataTarget::ID_OPTION + 1, ICON_BEFORE_TEXT | LAYOUT_SIDE_TOP)
+
+    # Text fields go on the right
+    texts = FXVerticalFrame.new(options, LAYOUT_SIDE_RIGHT | FRAME_NONE |
+      LAYOUT_FILL_Y, :padLeft => PAD, :padRight => PAD)
+    @fragments = FXTextField.new(texts, 7, :opts => TEXTFIELD_INTEGER |
+      FRAME_RIDGE)
+  end
+
+end  # of FragmentDialog
 
 # Main GUI window
 class MangleWindow < FXMainWindow
@@ -377,6 +452,9 @@ class MangleWindow < FXMainWindow
     button_revert = FXButton.new(button_list, "&Revert",
       :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
     button_revert.connect(SEL_COMMAND) { redraw_packets }
+    button_fragment = FXButton.new(button_list, "&Fragment",
+      :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
+    button_fragment.connect(SEL_COMMAND) { fragment_packets }
 
     # Table which contains our packet view
     @table = FXHorizontalFrame.new(packer, :opts => LAYOUT_FILL | FRAME_SUNKEN |
@@ -564,6 +642,12 @@ class MangleWindow < FXMainWindow
     end
     @packets = new_packets
     redraw_packets
+  end
+
+  # Bring up a small dialog for fragmentation options, then fragment,
+  # commit order, and redraw.
+  def fragment_packets
+    FragmentDialog.new(self).execute
   end
 
 end  # of class MangleWindow
