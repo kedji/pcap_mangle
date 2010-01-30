@@ -385,6 +385,12 @@ class MangleWindow < FXMainWindow
     button_save = FXButton.new(button_list, "&Save", :opts => LAYOUT_SIDE_TOP |
       FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
     button_save.connect(SEL_COMMAND) { save_pcap() }
+    button_commit = FXButton.new(button_list, "&Commit",
+      :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
+    button_commit.connect(SEL_COMMAND) { commit_order! }
+    button_revert = FXButton.new(button_list, "&Revert",
+      :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
+    button_revert.connect(SEL_COMMAND) { redraw_packets }
 
     # Table which contains our packet view
     @table = FXHorizontalFrame.new(packer, :opts => LAYOUT_FILL | FRAME_SUNKEN |
@@ -410,6 +416,7 @@ class MangleWindow < FXMainWindow
     file = nil
     file = dialog.filename.first if dialog.execute == 1
     return nil unless file
+    commit_order!
 
     # Save our packet list to a file, one packet at a time.
     File.open(file, 'w') do |pcap|
@@ -537,7 +544,11 @@ class MangleWindow < FXMainWindow
     pos = @column.currentItem
     pos = @column.numItems if pos < 0
     @clipboard.each do |pkt_text|
-      @column.insertItem(pos, FXListItem.new(pkt_text))
+      if pos == @column.numItems
+        @column.appendItem(pkt_text)
+      else
+        @column.insertItem(pos, FXListItem.new(pkt_text))
+      end
       select_list << pos
       pos += 1
     end
@@ -558,6 +569,17 @@ class MangleWindow < FXMainWindow
     @column.numItems.times { |i| @column.deselectItem(i) }
   end
 
+  # Modify our actual packet list so it matches the display
+  def commit_order!
+    new_packets = []
+    @column.numItems.times do |i|
+      pkt_index = @column.getItemText(i).to_i - 1
+      new_packets << @packets[pkt_index]
+    end
+    @packets = new_packets
+    redraw_packets
+  end
+
 end  # of class MangleWindow
 
 
@@ -565,8 +587,9 @@ end  # of class MangleWindow
 # Start the application
 if __FILE__ == $0
   FXApp.new do |app|
-    MangleWindow.new(app)
+    window = MangleWindow.new(app)
     app.create
+    window.load_pcap(*ARGV) unless ARGV.empty?
     app.run
   end
 end
