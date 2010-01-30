@@ -390,16 +390,15 @@ class MangleWindow < FXMainWindow
     @table = FXHorizontalFrame.new(packer, :opts => LAYOUT_FILL | FRAME_SUNKEN |
       FRAME_THICK | LAYOUT_SIDE_LEFT, :padLeft => 0, :padRight => 0,
       :padTop => 0, :padBottom => 0, :hSpacing => 0, :vSpacing => 0)
-    @cols = []
-    #@cols << FXList.new(@table, :opts => LAYOUT_FILL_Y | LAYOUT_FIX_WIDTH |
-    #  LIST_MULTIPLESELECT, :width => 80)
-    @cols << FXList.new(@table, :opts => LAYOUT_FILL_Y | LAYOUT_FILL_X |
+    @column =  FXList.new(@table, :opts => LAYOUT_FILL_Y | LAYOUT_FILL_X |
       LIST_EXTENDEDSELECT)
-    @cols[0].backColor = FXRGB(240, 240, 255)
-    @cols[0].font = FXFont.new(app, 'system', 8)
+    @column.backColor = FXRGB(240, 240, 255)
+    @column.font = FXFont.new(app, 'system', 8)
+    @column.connect(SEL_KEYPRESS, method(:on_keypress))
 
     # Our actual packet content list
     @packets = []
+    @clipboard = []
     @start_time = 0.0
   end  # of initialize
 
@@ -417,7 +416,7 @@ class MangleWindow < FXMainWindow
       pcap.print(@pcap_header)
       timestamp = @start_time
       @packets.each do |pkt|
-pkt.checksum!
+        pkt.checksum!   # This doesn't need to happen every time
         timestamp += pkt.time_offset
         pkt = pkt.to_s
         seconds = rltoh(timestamp.to_i)
@@ -464,27 +463,103 @@ pkt.checksum!
 
   # Redraw the list of packets in our buffer completely
   def redraw_packets()
-    @cols[0].clearItems()
+    @column.clearItems()
     num = 1
     @packets.each do |packet|
-      @cols[0].appendItem("#{num}: #{packet.inspect}")
+      @column.appendItem("#{num}: #{packet.inspect}")
       num += 1
     end
   end
 
+  # The user struck a key within the packet list
+  def on_keypress(sender, selector, e)
+    if e.code == KEY_KP_Add or e.code == KEY_plus
+      slide_selection_down()
+    elsif e.code == KEY_KP_Subtract or e.code == KEY_minus
+      slide_selection_up()
+    elsif e.code == KEY_x
+      cut_selection(true, true)
+    elsif e.code == KEY_c
+      cut_selection(true, false)
+    elsif e.code == KEY_KP_Delete or e.code == KEY_Delete
+      cut_selection(false, true)
+    elsif e.code == KEY_Insert or e.code == KEY_KP_Insert or e.code == KEY_v
+      paste_clipboard
+    elsif e.code == KEY_Escape
+      unselect_all
+    end
+    return false   # so it gets passed on to other handlers
+  end
+
+  # Move all the selected packets up one space, unless there's no room
+  def slide_selection_up
+    return nil if @column.currentItem < 0
+    @column.numItems.times do |i|
+      if @column.itemSelected?(i)
+        return nil if i == 0
+        @column.moveItem(i - 1, i)
+      end
+    end
+  end
+
+  # Move all the slected packets down one space, unless there's no room
+  def slide_selection_down
+    return nil if @column.currentItem < 0
+    (@column.numItems - 1).downto(0) do |i|
+      if @column.itemSelected?(i)
+        return nil if i >= @column.numItems - 1
+        @column.moveItem(i + 1, i)
+      end
+    end
+  end
+
+  # Copy the selected packets into our buffer, cutting them if so requested
+  def cut_selection(do_copy = true, do_cut = false)
+    @clipboard = [] if do_copy
+    i = 0
+    while i < @column.numItems do
+      if @column.itemSelected?(i)
+        @clipboard << @column.getItemText(i) if do_copy
+        if do_cut
+          @column.removeItem(i)
+          i -= 1
+        end
+      end
+      i += 1
+    end
+  end
+
+  # Put the clipboard packets at the current position, displacing the currently
+  # selected item.  If there is no currently selected item, append clipboard.
+  def paste_clipboard
+    return nil if @clipboard.empty?
+    select_list = []
+    pos = @column.currentItem
+    pos = @column.numItems if pos < 0
+    @clipboard.each do |pkt_text|
+      @column.insertItem(pos, FXListItem.new(pkt_text))
+      select_list << pos
+      pos += 1
+    end
+
+    # Now go back and highlight all the new items
+    @column.numItems.times do |i|
+      if select_list.include?(i)
+        @column.selectItem(i)
+      else
+        @column.deselectItem(i)
+      end
+      @column.currentItem = select_list.first
+    end
+  end
+
+  # Just don't select anything
+  def unselect_all
+    @column.numItems.times { |i| @column.deselectItem(i) }
+  end
+
 end  # of class MangleWindow
 
-
-
-
-#pcap = File.open ARGV[0]
-#hdr = pcap.read(24)
-#packets = []
-#timestamp = 0.0
-#while pcap.pos < pcap.lstat.size - 15 do
-#  packets << Packet.new(pcap, timestamp)
-#  timestamp += packets.last.time_offset
-#end
 
 
 # Start the application
