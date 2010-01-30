@@ -1,0 +1,18 @@
+pcap_mangle
+-----------
+
+Simple GUI tool for quickly reordering, transforming, and smashing .pcap
+packet capture files.  This is a helper project intended to provide better
+stress-testing captures for DPI development.  This is a workbench project so
+new features will become available as they're needed.
+
+
+Interested in DPI?  Email me at kedjikeen (at) yahoo (dot) com.
+
+
+Copyright notice:
+ (C) 2010
+This software is provided 'as-is' without any express or implied warranty.
+In no event will the authors be held liable for damages arising from the
+use of this software.  All license is reserved.
+
