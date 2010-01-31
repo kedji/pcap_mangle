@@ -13,6 +13,7 @@
 require 'rubygems' rescue nil
 require 'fox16'
 require 'ipaddr'
+require 'md5'
 
 include Fox
 
@@ -206,6 +207,13 @@ class TCPPacket < NestedPacket
     return (@hdr[0] + @hdr[2]).to_s + (@hdr[1] * @hdr[3]).to_s(16)
   end
 
+  # Deterministically "randomize" the source and destination ports
+  def mangle_port!
+    return nil if @error
+    @hdr[0,2] = MD5::digest(@hdr[0,2])[0,2]
+    @hdr[2,2] = MD5::digest(@hdr[2,2])[0,2]
+  end
+
 end  # of class TCPPacket
 
 
@@ -251,6 +259,13 @@ class UDPPacket < NestedPacket
   # Contribute our piece to unique flow identification
   def flow_id
     return (@hdr[0] ^ @hdr[2]).to_s + (@hdr[1] + @hdr[3]).to_s(16)
+  end
+
+  # Deterministically "randomize" the source and destination ports
+  def mangle_port!
+    return nil if @error
+    @hdr[0,2] = MD5::digest(@hdr[0,2])[0,2]
+    @hdr[2,2] = MD5::digest(@hdr[2,2])[0,2]
   end
 
 end  # of class UDPPacket
@@ -390,6 +405,22 @@ class IPPacket < NestedPacket
            next_flow
   end
 
+  # Deterministically "randomize" the source and destination IP addresses
+  def mangle_ip!
+    return nil if @error
+    @hdr[12,4] = MD5::digest(@hdr[12,4])[0,4]
+    @hdr[16,4] = MD5::digest(@hdr[16,4])[0,4]
+    checksum!
+  end
+
+  # TCP or UDP above us wants mangled ports, but we're responsible for
+  # checksumming.
+  def mangle_port!
+    return nil if @error or (@hdr[6] & 0xBF) + @hdr[7] > 0 or
+                  (@content.class != TCPPacket and @content.class != UDPPacket)
+    @content.mangle_port!
+    checksum!
+  end
 end  # of class IPPacket
 
 
@@ -629,10 +660,10 @@ class MangleWindow < FXMainWindow
     button_follow.connect(SEL_COMMAND) { follow_flows }
     button_rand_ip = FXButton.new(button_list, "Mangle IPs",
       :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
-    button_rand_ip.connect(SEL_COMMAND) {  }
+    button_rand_ip.connect(SEL_COMMAND) { mangle_ip }
     button_rand_port = FXButton.new(button_list, "Mangle Ports",
       :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
-    button_rand_port.connect(SEL_COMMAND) {  }
+    button_rand_port.connect(SEL_COMMAND) { mangle_port }
 
     # Table which contains our packet view
     @table = FXHorizontalFrame.new(packer, :opts => LAYOUT_FILL | FRAME_SUNKEN |
@@ -868,7 +899,28 @@ class MangleWindow < FXMainWindow
         @column.selectItem(i) if flows[flow]
       end
     end
+  end
 
+  # Deterministically mangle all selected IP packets
+  def mangle_ip
+    @column.numItems.times do |i|
+      if @column.itemSelected?(i)
+        num = @column.getItemText(i).to_i
+        @packets[num - 1].mangle_ip!
+        @column.setItemText(i, "#{num}: #{@packets[num - 1].inspect}")
+      end
+    end
+  end
+
+  # Deterministically mangle all selected TCP or UDP packets
+  def mangle_port
+    @column.numItems.times do |i|
+      if @column.itemSelected?(i)
+        num = @column.getItemText(i).to_i
+        @packets[num - 1].mangle_port!
+        @column.setItemText(i, "#{num}: #{@packets[num - 1].inspect}")
+      end
+    end
   end
 
 end  # of class MangleWindow
