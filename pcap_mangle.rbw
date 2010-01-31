@@ -104,9 +104,9 @@ class NestedPacket
   # Pass fragmentation requests down until we hit an appropriate level 3
   # protocol.  On the way back up, if fragmentation has occurred then an
   # array will be returned.  Prepend our header to each element and return.
-  def fragment!(max_frags)
+  def fragment!(frag_options)
     return nil if @error or @content.class <= String
-    frags = @content.fragment!(max_frags)
+    frags = @content.fragment!(frag_options)
     if frags
       frags.collect! do |x|
         frag = self.dup
@@ -292,7 +292,66 @@ class IPPacket < NestedPacket
     if @content.class <= TCPPacket or @content.class <= UDPPacket
       @content.checksum!(@hdr[12,8])
     end
-  end    
+  end
+
+  # We have been instructed to fragment!  This should be fun.  If it's by
+  # MTU, try our best to fit within it.  Otherwise, fragment as much as
+  # possible and then randomly merge until we're within our limits.  Return
+  # nil if no fragmentation occurs.
+  def fragment!(frag_options)
+    return nil if @error
+
+    # If it's too short or already fragmented then don't fragment.
+    # And ignore the goddamn Don't Fragment bit.
+    return nil if (@hdr[6] & 0xBF) + @hdr[7] > 0
+    return nil if @content.length < 11
+
+    # Fragment based on type
+    payload = @content.to_s
+    chunks = []
+    if frag_options.type == :random and frag_options.fragments > 1
+      pos = 0
+
+      # Split the payload into 8-byte chunks
+      while pos < payload.length do
+        chunks << payload[pos, 8]
+        pos += 8
+      end
+
+      # Now merge the 8-byte chunks randomly until we have few enough
+      while chunks.length > frag_options.fragments
+        i = rand(chunks.length - 1)
+        chunks[i, 2] = [ chunks[i,2].join ]
+      end
+    elsif frag_options.type == :mtu
+      avail = (frag_options.bytes - 14 - @hdr.length) / 8 * 8
+      return nil if avail >= payload.length or avail < 8
+      
+      # Now split the payload into avail-sized chunks
+      pos = 0
+      while pos < payload.length do
+        chunks << payload[pos, avail]
+        pos += avail
+      end
+    end  # of fragmentation type
+    return nil if chunks.empty?
+
+    # Now let's generage an array of IP packets with the same header as this
+    # one, but with the appropriate fragment metadate set in the header
+    pos = 0
+    mf = 0x20
+    chunks.collect do |chunk|
+      frag = @hdr.dup
+      total = frag.length + chunk.length
+      mf = 0 if chunk == chunks.last
+      frag[7] = pos & 0xFF
+      frag[6] = ((pos >> 8) & 0x1F) + mf
+      frag[3] = total & 0xFF
+      frag[2] = (total >> 8) & 0xFF
+      pos += (chunk.length / 8)
+      IPPacket.new(frag + chunk)
+    end
+  end
 
 end  # of class IPPacket
 
@@ -362,6 +421,7 @@ class Packet < NestedPacket
   end
 
   attr_reader :time_offset, :orig_len, :content
+  attr_writer :time_offset, :orig_len, :content
 
   # A little awkward - if this is the first packet of the cpature, it has
   # a huge time_offset (the full timestamp).  So as a hack, reset the ts_sec
@@ -384,6 +444,24 @@ class Packet < NestedPacket
   def length
     16 + @content.length
   end
+
+  # Special case here because we don't maintain this level's state inside of
+  # a @hdr String.  Give each fragment the appropriate fraction of the
+  # parent's time_offset.
+  def fragment!(frag_options)
+    return nil if @error or @content.class <= String
+    frags = @content.fragment!(frag_options)
+    if frags
+      frags.collect! do |x|
+        frag = self.dup
+        frag.content = x
+        frag.time_offset = @time_offset / frags.length
+        frag
+      end
+    end
+    return frags
+  end
+
 end  # of class Packet
 
 
@@ -391,30 +469,84 @@ end  # of class Packet
 
 # Packet fragmentation dialog
 class FragmentDialog < FXDialogBox
-  PAD = 12
+  WINDOW_HEIGHT = 120
+  WINDOW_WIDTH = 287
+  COLUMN1 = 20
+  COLUMN2 = 118
+  COLUMN3 = 200
+  ITEM_Y = 28
+  BUTTON_Y = 84
+  BUTTON_HEIGHT = 24
+  BUTTON_WIDTH = 60
 
   def initialize(owner)
-    super(owner, "Fragmentation", DECOR_TITLE | DECOR_BORDER)
+    super(owner, "Fragmentation", LAYOUT_EXPLICIT | DECOR_TITLE | DECOR_CLOSE |
+          DECOR_RESIZE | LAYOUT_MIN_WIDTH | LAYOUT_MIN_HEIGHT,
+          :height => WINDOW_HEIGHT, :width => WINDOW_WIDTH)
+    radio_target = FXDataTarget.new(0)
     
-    # Create the top container
-    options = FXHorizontalFrame.new(self, LAYOUT_SIDE_TOP | FRAME_NONE |
-      LAYOUT_FILL_X | PACK_UNIFORM_WIDTH, :padLeft => PAD, :padRight => PAD,
-      :padTop => PAD, :padBottom => PAD)
-
+    # Set our default values
+    owner.frag_options.type      ||= :random
+    owner.frag_options.bytes     ||= 1520
+    owner.frag_options.fragments ||= 2
+    
     # Radio buttons go on the left
-    radio = FXVerticalFrame.new(options, LAYOUT_SIDE_LEFT | FRAME_NONE |
-      LAYOUT_FILL_Y, :padLeft => PAD, :padRight => PAD)
-    frag_target = FXDataTarget.new(0)
-    @random = FXRadioButton.new(radio, "Random", frag_target,
-      FXDataTarget::ID_OPTION + 0, ICON_BEFORE_TEXT | LAYOUT_SIDE_TOP)
-    @mtu = FXRadioButton.new(radio, "MTU", frag_target,
-      FXDataTarget::ID_OPTION + 1, ICON_BEFORE_TEXT | LAYOUT_SIDE_TOP)
+    random = FXRadioButton.new(self, "Random", radio_target,
+      FXDataTarget::ID_OPTION + 0, ICON_BEFORE_TEXT | LAYOUT_EXPLICIT |
+      JUSTIFY_LEFT, :x => COLUMN1, :y => 16, :width => 80, :height => 20)
+    mtu = FXRadioButton.new(self, "MTU", radio_target,
+      FXDataTarget::ID_OPTION + 1, ICON_BEFORE_TEXT | LAYOUT_EXPLICIT |
+      JUSTIFY_LEFT, :x => COLUMN1, :y => 16 + ITEM_Y, :width => 80,
+      :height => 20)
+
+    # Text box descriptions go in the middle
+    FXLabel.new(self, "Max Count:", nil, LAYOUT_EXPLICIT | JUSTIFY_RIGHT,
+                :x => COLUMN2, :y => 16, :width => 78, :height => 20);
+    FXLabel.new(self, "Bytes:", nil, LAYOUT_EXPLICIT | JUSTIFY_RIGHT,
+                :x => COLUMN2, :y => 16 + ITEM_Y, :width => 78, :height => 20);
 
     # Text fields go on the right
-    texts = FXVerticalFrame.new(options, LAYOUT_SIDE_RIGHT | FRAME_NONE |
-      LAYOUT_FILL_Y, :padLeft => PAD, :padRight => PAD)
-    @fragments = FXTextField.new(texts, 7, :opts => TEXTFIELD_INTEGER |
-      FRAME_RIDGE)
+    fragments = FXTextField.new(self, 7, :opts => TEXTFIELD_INTEGER |
+      FRAME_SUNKEN | LAYOUT_EXPLICIT, :x => COLUMN3, :y => 16,
+      :width => 60, :height => 20)
+    fragments.text = owner.frag_options.fragments.to_s
+    bytes = FXTextField.new(self, 7, :opts => TEXTFIELD_INTEGER |
+      FRAME_SUNKEN | LAYOUT_EXPLICIT, :x => COLUMN3, :y => 16 + ITEM_Y,
+      :width => 60, :height => 20)
+    bytes.text = owner.frag_options.bytes.to_s
+
+    # OK and Cancel buttons go on the bottom
+    button_ok = FXButton.new(self, "OK", :opts => LAYOUT_EXPLICIT |
+      FRAME_NORMAL, :x => WINDOW_WIDTH - BUTTON_WIDTH - 16, :y => BUTTON_Y,
+      :height => BUTTON_HEIGHT, :width => BUTTON_WIDTH,
+      :target => self, :selector => ID_ACCEPT)
+    button_cancel = FXButton.new(self, "Cancel", :opts => LAYOUT_EXPLICIT |
+      FRAME_NORMAL, :x => WINDOW_WIDTH - BUTTON_WIDTH * 2 - 24, :y => BUTTON_Y,
+      :height => BUTTON_HEIGHT, :width => BUTTON_WIDTH,
+      :target => self, :selector => ID_CANCEL)
+
+    # Set the radio button appropriately with memory
+    if owner.frag_options.type == :random
+      random.checkState = TRUE
+    else
+      mtu.checkState = TRUE
+    end
+
+    # Sync view -> model
+    fragments.connect(SEL_CHANGED) do
+      owner.frag_options.fragments = fragments.text.to_i
+    end
+    bytes.connect(SEL_CHANGED) do
+      owner.frag_options.bytes = bytes.text.to_i
+    end
+    random.connect(SEL_COMMAND) do
+      owner.frag_options.type = :random
+      mtu.checkState = FALSE
+    end
+    mtu.connect(SEL_COMMAND) do
+      owner.frag_options.type = :mtu
+      random.checkState = FALSE
+    end
   end
 
 end  # of FragmentDialog
@@ -470,7 +602,10 @@ class MangleWindow < FXMainWindow
     @packets = []
     @clipboard = []
     @start_time = 0.0
+    @frag_options = Struct.new(:type, :bytes, :fragments).new
   end  # of initialize
+
+  attr_reader :frag_options
 
   # Choose a file into which we save our packet capture
   def save_pcap
@@ -536,7 +671,7 @@ class MangleWindow < FXMainWindow
   def redraw_packets()
     @column.clearItems()
     num = 1
-    @packets.each do |packet|
+    (@packets || []).each do |packet|
       @column.appendItem("#{num}: #{packet.inspect}")
       num += 1
     end
@@ -647,7 +782,24 @@ class MangleWindow < FXMainWindow
   # Bring up a small dialog for fragmentation options, then fragment,
   # commit order, and redraw.
   def fragment_packets
-    FragmentDialog.new(self).execute
+    if FragmentDialog.new(self).execute == 1
+      new_packets = []
+      @column.numItems.times do |i|
+        pkt = @packets[@column.getItemText(i).to_i - 1]
+        if @column.itemSelected?(i)
+          frags = pkt.fragment!(@frag_options)
+          if frags
+            new_packets += frags
+          else
+            new_packets << pkt
+          end
+        else
+          new_packets << pkt
+        end
+      end
+      @packets = new_packets
+      redraw_packets
+    end
   end
 
 end  # of class MangleWindow
