@@ -117,6 +117,22 @@ class NestedPacket
     return frags
   end
 
+  # Pass on mangling requests to deeper levels
+  def mangle_ip!
+    return nil if @error or @content.class <= String
+    @content.mangle_ip!
+  end
+  def mangle_port!
+    return nil if @error or @content.class <= String
+    @content.mangle_port!
+  end
+
+  # Pass on flow identification requests to deeper levels
+  def flow_id
+    return '' if @error or @content.class <= String
+    return self.class.to_s + @content.flow_id
+  end
+
 end  # of class NestedPacket
 
 
@@ -185,6 +201,11 @@ class TCPPacket < NestedPacket
     @hdr[17] = (checksum & 0xFF)
   end
 
+  # Contribute our piece to unique flow identification
+  def flow_id
+    return (@hdr[0] + @hdr[2]).to_s + (@hdr[1] * @hdr[3]).to_s(16)
+  end
+
 end  # of class TCPPacket
 
 
@@ -225,6 +246,11 @@ class UDPPacket < NestedPacket
   def checksum!(ip_bytes = nil)
     return nil if @error
     @hdr[6,2] = "\x00\x00"
+  end
+
+  # Contribute our piece to unique flow identification
+  def flow_id
+    return (@hdr[0] ^ @hdr[2]).to_s + (@hdr[1] + @hdr[3]).to_s(16)
   end
 
 end  # of class UDPPacket
@@ -349,8 +375,19 @@ class IPPacket < NestedPacket
       frag[3] = total & 0xFF
       frag[2] = (total >> 8) & 0xFF
       pos += (chunk.length / 8)
-      IPPacket.new(frag + chunk)
+      frag = IPPacket.new(frag + chunk)
+      frag.checksum!
+      frag
     end
+  end
+
+  # Contribute our piece to unique flow identification
+  def flow_id
+    next_flow = ''
+    next_flow = @content.flow_id unless @content.class <= String
+    return (@hdr[12] + @hdr[16]).to_s + (@hdr[13] ^ @hdr[17]).to_s(16) +
+           (@hdr[14] + @hdr[18]).to_s + (@hdr[15] ^ @hdr[19]).to_s(16) +
+           next_flow
   end
 
 end  # of class IPPacket
@@ -554,9 +591,9 @@ end  # of FragmentDialog
 # Main GUI window
 class MangleWindow < FXMainWindow
   WINDOW_HEIGHT = 320
-  WINDOW_WIDTH  = 480
+  WINDOW_WIDTH  = 520
   WINDOW_TITLE  = "Pcap Mangle"
-  BUTTON_WIDTH  = 90
+  BUTTON_WIDTH  = 100
 
   include EndianMess
 
@@ -587,6 +624,15 @@ class MangleWindow < FXMainWindow
     button_fragment = FXButton.new(button_list, "&Fragment",
       :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
     button_fragment.connect(SEL_COMMAND) { fragment_packets }
+    button_follow = FXButton.new(button_list, "Follow",
+      :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
+    button_follow.connect(SEL_COMMAND) { follow_flows }
+    button_rand_ip = FXButton.new(button_list, "Mangle IPs",
+      :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
+    button_rand_ip.connect(SEL_COMMAND) {  }
+    button_rand_port = FXButton.new(button_list, "Mangle Ports",
+      :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
+    button_rand_port.connect(SEL_COMMAND) {  }
 
     # Table which contains our packet view
     @table = FXHorizontalFrame.new(packer, :opts => LAYOUT_FILL | FRAME_SUNKEN |
@@ -622,7 +668,6 @@ class MangleWindow < FXMainWindow
       pcap.print(@pcap_header)
       timestamp = @start_time
       @packets.each do |pkt|
-        pkt.checksum!   # This doesn't need to happen every time
         timestamp += pkt.time_offset
         pkt = pkt.to_s
         seconds = rltoh(timestamp.to_i)
@@ -800,6 +845,30 @@ class MangleWindow < FXMainWindow
       @packets = new_packets
       redraw_packets
     end
+  end
+
+  # Select all the packets that belong to any of the flows of any of the
+  # currently selected packets
+  def follow_flows
+    flows = {}
+
+    # First build our follow hash
+    @column.numItems.times do |i|
+      if @column.itemSelected?(i)
+        flow = @packets[@column.getItemText(i).to_i - 1].flow_id
+        flows[flow] = true
+      end
+    end
+    return nil if flows.empty?
+
+    # Now select every packet that has a flow_id in our hash
+    @column.numItems.times do |i|
+      unless @column.itemSelected?(i)
+        flow = @packets[@column.getItemText(i).to_i - 1].flow_id
+        @column.selectItem(i) if flows[flow]
+      end
+    end
+
   end
 
 end  # of class MangleWindow
