@@ -180,8 +180,8 @@ class TCPPacket < NestedPacket
   # Recalculate the checksum field for this TCP packet.  Thanks to the
   # TCP pseudo-header, the 8 bytes of the IP header containing source and
   # destination address need to be provided.  *sigh*  Layering violations.
-  def checksum!(ip_bytes)
-    return nil if @error
+  def checksum!(ip_bytes = nil)
+    return nil if @error or not ip_bytes
 
     # Gather all the data on which we'll be calculating our checksum
     data = @hdr + @content.to_s
@@ -209,6 +209,7 @@ class TCPPacket < NestedPacket
 
   # Contribute our piece to unique flow identification
   def flow_id
+    return 'TCP' if @error
     return (@hdr[0] + @hdr[2]).to_s + (@hdr[1] * @hdr[3]).to_s(16)
   end
 
@@ -276,6 +277,42 @@ class UDPPacket < NestedPacket
 end  # of class UDPPacket
 
 
+# Class that holds the 64-bit IPv6 Fragment Header
+class IPv6FragmentPacket < NestedPacket
+  
+  def initialize(data)
+    @error = nil
+    @hdr = ''
+    hdr_len = 8
+    if data.length < hdr_len
+      @error = "Truncated"
+      @content = data
+      return nil
+    end
+
+    # Grab our header
+    @hdr = data[0,hdr_len]
+    data[0,hdr_len] = ''
+    next_layer = @hdr[0]
+
+    # Examine the protocol field for types we recognize
+    if next_layer == 6
+      @content = TCPPacket.new(data, true)
+    elsif next_layer == 17
+      @content = UDPPacket.new(data, true)
+    else
+      @content = data
+    end
+  end
+
+  def details()
+    return @error if @error
+    ''
+  end  
+
+end  # of IPv6FragmentPacket class
+
+
 # Class that holds IPv6 packets
 class IPv6Packet < NestedPacket
 
@@ -288,19 +325,20 @@ class IPv6Packet < NestedPacket
       @content = data
       return nil
     end
-    payload_length = (data[4] << 8) + data[5]
+    #payload_length = (data[4] << 8) + data[5]
 
     # Grab our header
     @hdr = data[0,hdr_len]
     data[0,hdr_len] = ''
     next_layer = @hdr[6]
-    fragmented = next_layer == 44
     
     # Examine the protocol field for types we recognize
     if next_layer == 6
-      @content = TCPPacket.new(data, fragmented)
+      @content = TCPPacket.new(data, false)
     elsif next_layer == 17
-      @content = UDPPacket.new(data, fragmented)
+      @content = UDPPacket.new(data, false)
+    elsif next_layer == 44
+      @content = IPv6FragmentPacket.new(data)
     else
       @content = data
     end
@@ -357,6 +395,68 @@ class IPv6Packet < NestedPacket
                       @content.class == UDPPacket
     @content.mangle_port!
     checksum!
+  end
+
+  # IPv6 fragments contain an optional extension header, otherwise the IPv6
+  # header remains relatively unchanged.
+  def fragment!(frag_options)
+    return nil if @error
+
+    # If it's too short or already fragmented then don't fragment.  Also, for
+    # now let's only fragment TCP and UDP packets
+    return nil if @content.length < 11
+    return nil unless @content.class == TCPPacket or
+                      @content.class == UDPPacket
+
+    # Fragment based on requested fragmentation type
+    payload = @content.to_s
+    chunks = []
+    if frag_options.type == :random and frag_options.fragments > 1
+      pos = 0
+
+      # Split the payload into 8-byte chunks
+      while pos < payload.length do
+        chunks << payload[pos, 8]
+        pos += 8
+      end
+
+      # Now merge the 8-byte chunks randomly until we have few enough
+      while chunks.length > frag_options.fragments
+        i = rand(chunks.length - 1)
+        chunks[i, 2] = [ chunks[i,2].join ]
+      end
+    elsif frag_options.type == :mtu
+      avail = (frag_options.bytes - 14 - @hdr.length) / 8 * 8
+      return nil if avail >= payload.length or avail < 8
+      
+      # Now split the payload into avail-sized chunks
+      pos = 0
+      while pos < payload.length do
+        chunks << payload[pos, avail]
+        pos += avail
+      end
+    end  # of fragmentation type
+    return nil if chunks.empty?
+
+    # Now let's generate an array of IPv6 packets with the same header as this
+    # one, with the appropriate fragment metadate set in the optional header
+    pos = 0
+    mf = 0x01
+    id = rand(256).chr + rand(256).chr + rand(256).chr + rand(256).chr
+    chunk_num = 0
+    chunks.collect do |chunk|
+      frag = @hdr.dup
+      frag_hdr = @hdr[6,1] + "\0AA" + id
+      chunk_num += 1
+      mf = 0 if chunk_num == chunks.length
+      frag_hdr[2] = (pos >> 8) & 0xFF              # fragment offset, in 8-byte
+      frag_hdr[3] = (pos & 0xF8) + mf              # chunks, plus MF byte
+      frag[5] = (chunk.length + 8) & 0xFF          # payload length, top byte
+      frag[4] = ((chunk.length + 8) >> 8) & 0xFF   # ...bottom byte
+      frag[6] = 44                                 # next-hop = fragment header
+      pos += chunk.length
+      IPv6Packet.new(frag + frag_hdr + chunk)
+    end
   end
 end  # of class IPv6Packet
 
@@ -439,7 +539,7 @@ class IPPacket < NestedPacket
     return nil if (@hdr[6] & 0xBF) + @hdr[7] > 0
     return nil if @content.length < 11
 
-    # Fragment based on type
+    # Fragment based on requested fragmentation type
     payload = @content.to_s
     chunks = []
     if frag_options.type == :random and frag_options.fragments > 1
@@ -469,14 +569,16 @@ class IPPacket < NestedPacket
     end  # of fragmentation type
     return nil if chunks.empty?
 
-    # Now let's generage an array of IP packets with the same header as this
+    # Now let's generate an array of IP packets with the same header as this
     # one, but with the appropriate fragment metadate set in the header
     pos = 0
     mf = 0x20
+    chunk_num = 0
     chunks.collect do |chunk|
       frag = @hdr.dup
       total = frag.length + chunk.length
-      mf = 0 if chunk == chunks.last
+      chunk_num += 1
+      mf = 0 if chunk_num == chunks.length
       frag[7] = pos & 0xFF
       frag[6] = ((pos >> 8) & 0x1F) + mf
       frag[3] = total & 0xFF
