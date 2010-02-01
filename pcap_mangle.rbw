@@ -133,6 +133,20 @@ class NestedPacket
     @content.mangle_port!
   end
 
+  # The persistence of this method is handled in the next-lower layer.  Eg,
+  # Ethernet handles IP's persistence.  This can be any layer, however, that
+  # can contain an IP header directly within it.  VLAN and GRE can also.
+  # Any such layer must define the set_ethertype() header.
+  def ip_426!
+    return nil if @error or @content.class <= String
+    ret = @content.ip_426!
+    if ret
+      @content = ret
+      set_ethertype("\x86\xDD")
+    end
+    return nil
+  end    
+
   # Pass on flow identification requests to deeper levels
   def flow_id
     return '' if @error or @content.class <= String
@@ -616,6 +630,19 @@ class IPPacket < NestedPacket
     @content.mangle_port!
     checksum!
   end
+
+  # Magically convert ourselves into an IPv6 packet!
+  def ip_426!
+    return nil if @error or (@hdr[6] & 0xBF) + @hdr[7] > 0
+    payload_length = @content.length
+    fake_hdr = "\x06\0\0\0" + (payload_length >> 8).chr +
+               (payload_length & 0xFF).chr + @hdr[9,1] + "\x40"
+    src = "\x1b\xff" + ("\0" * 10) + @hdr[12,4]
+    dst = "\x1b\xff" + ("\0" * 10) + @hdr[16,4]
+    new_packet = IPv6Packet.new(fake_hdr + src + dst + @content.to_s)
+    new_packet.checksum!
+    return new_packet
+  end
 end  # of class IPPacket
 
 
@@ -652,6 +679,12 @@ class EthernetPacket < NestedPacket
     return @error if @error
     return "%02x%02x" % [@hdr[12], @hdr[13]] if @content.class <= String
     return ''
+  end
+
+  # We have been instructed to change our ethertype
+  def set_ethertype(new_type)
+    raise "Bad ethertype: #{new_type.inspect}" unless new_type.length == 2
+    @hdr[12,2] = new_type
   end
 
 end  # of class EthernetPacket
@@ -861,6 +894,9 @@ class MangleWindow < FXMainWindow
     button_rand_port = FXButton.new(button_list, "Mangle Ports",
       :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
     button_rand_port.connect(SEL_COMMAND) { mangle_port }
+    button_426 = FXButton.new(button_list, "IPv4 > IPv6",
+      :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
+    button_426.connect(SEL_COMMAND) { ip_426 }
 
     # Table which contains our packet view
     @table = FXHorizontalFrame.new(packer, :opts => LAYOUT_FILL | FRAME_SUNKEN |
@@ -1116,6 +1152,17 @@ class MangleWindow < FXMainWindow
       if @column.itemSelected?(i)
         num = @column.getItemText(i).to_i
         @packets[num - 1].mangle_port!
+        @column.setItemText(i, "#{num}: #{@packets[num - 1].inspect}")
+      end
+    end
+  end
+
+  # Convert selected IPv4 packets to IPv6 packets.  Doesn't work on fragments.
+  def ip_426
+    @column.numItems.times do |i|
+      if @column.itemSelected?(i)
+        num = @column.getItemText(i).to_i
+        @packets[num - 1].ip_426!
         @column.setItemText(i, "#{num}: #{@packets[num - 1].inspect}")
       end
     end
