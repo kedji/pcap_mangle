@@ -45,6 +45,11 @@ module EndianMess
     str
   end
 
+  # Ruby Long to Net - Convert a Fixnum to a 4-byte network-byte-order string
+  def rlton(num)
+    rltoh(num).reverse
+  end
+
 end  # of module EndianMess
 
 # Top-level class that assists with recursively examining packets and
@@ -173,7 +178,7 @@ class TCPPacket < NestedPacket
   end
 
   # Recalculate the checksum field for this TCP packet.  Thanks to the
-  # TCP psuedo-header, the 8 bytes of the IP header containing source and
+  # TCP pseudo-header, the 8 bytes of the IP header containing source and
   # destination address need to be provided.  *sigh*  Layering violations.
   def checksum!(ip_bytes)
     return nil if @error
@@ -271,7 +276,92 @@ class UDPPacket < NestedPacket
 end  # of class UDPPacket
 
 
-# Class that holds IP packets
+# Class that holds IPv6 packets
+class IPv6Packet < NestedPacket
+
+  def initialize(data)
+    @error = nil
+    @hdr = ''
+    hdr_len = 40
+    if data.length < hdr_len
+      @error = "Truncated"
+      @content = data
+      return nil
+    end
+    payload_length = (data[4] << 8) + data[5]
+
+    # Grab our header
+    @hdr = data[0,hdr_len]
+    data[0,hdr_len] = ''
+    next_layer = @hdr[6]
+    fragmented = next_layer == 44
+    
+    # Examine the protocol field for types we recognize
+    if next_layer == 6
+      @content = TCPPacket.new(data, fragmented)
+    elsif next_layer == 17
+      @content = UDPPacket.new(data, fragmented)
+    else
+      @content = data
+    end
+  end
+
+  # Take a 16-byte string and convert it to a Ruby IPAddr object
+  def ipv6_addr(bytes)
+    num = 0
+    bytes.each_byte { |x| num = (num << 8) + x }
+    IPAddr.new(num, Socket::AF_INET6)
+  end
+
+  def details()
+    return @error if @error
+    src = ipv6_addr(@hdr[8,16])
+    dst = ipv6_addr(@hdr[24,16])
+    "#{src} > #{dst}"
+  end
+
+  # Checksumming is easy because there is no network layer checksum in IPv6!
+  # Just pass the bytes necessary for pseudo-header computation if needed.
+  def checksum!
+    return nil if @error
+    if @content.class <= TCPPacket or @content.class <= UDPPacket
+      @content.checksum!(@hdr[8,32])
+    else
+      @content.checksum! unless @content.class <= String
+    end
+  end
+
+  # Contribute our piece to unique flow identification
+  def flow_id
+    return 'IPv6' if @error
+    next_hdr = ''
+    next_hdr = @content.flow_id unless @content.class <= String
+    this_hdr = ipv6_addr(@hdr[8,16]).to_i + ipv6_addr(@hdr[24,16]).to_i
+    return this_hdr.to_s(16) + next_hdr
+  end
+
+  # Deterministically "randomize" the source and destination IP addresses
+  def mangle_ip!
+    return nil if @error
+    @hdr[8,16] = MD5::digest(@hdr[8,16])
+    @hdr[24,16] = MD5::digest(@hdr[24,16])
+    @hdr[10,10] = "\0" * 10
+    @hdr[26,10] = "\0" * 10
+    checksum!
+  end
+
+  # TCP or UDP above us wants mangled ports, but we're responsible for
+  # checksumming.
+  def mangle_port!
+    return nil unless @content.class == TCPPacket or
+                      @content.class == UDPPacket
+    @content.mangle_port!
+    checksum!
+  end
+end  # of class IPv6Packet
+
+
+# Class that holds IPv4 packets
 class IPPacket < NestedPacket
 
   def initialize(data)
@@ -306,7 +396,7 @@ class IPPacket < NestedPacket
     return @error if @error
     src = IPAddr.new(ntorl(@hdr[12,4]), Socket::AF_INET)
     dst = IPAddr.new(ntorl(@hdr[16,4]), Socket::AF_INET)
-    "#{src}:#{dst}"
+    "#{src} > #{dst}"
   end
 
   def checksum!
@@ -329,9 +419,11 @@ class IPPacket < NestedPacket
     @hdr[11] = (checksum & 0xFF)
 
     # If this packet contains TCP or UDP, tell it to checksum as well!
-    # And because we're nice, give it information it needs for psuedo-header.
+    # And because we're nice, give it information it needs for pseudo-header.
     if @content.class <= TCPPacket or @content.class <= UDPPacket
       @content.checksum!(@hdr[12,8])
+    else
+      @content.checksum! unless @content.class <= String
     end
   end
 
@@ -398,11 +490,12 @@ class IPPacket < NestedPacket
 
   # Contribute our piece to unique flow identification
   def flow_id
-    next_flow = ''
-    next_flow = @content.flow_id unless @content.class <= String
+    return 'IPv4' if @error
+    next_hdr = ''
+    next_hdr = @content.flow_id unless @content.class <= String
     return (@hdr[12] + @hdr[16]).to_s + (@hdr[13] ^ @hdr[17]).to_s(16) +
            (@hdr[14] + @hdr[18]).to_s + (@hdr[15] ^ @hdr[19]).to_s(16) +
-           next_flow
+           next_hdr
   end
 
   # Deterministically "randomize" the source and destination IP addresses
@@ -445,6 +538,8 @@ class EthernetPacket < NestedPacket
     # Examine the Ethernet Type field for types we recognize
     if next_layer == "\x08\x00"
       @content = IPPacket.new(data)
+    elsif next_layer == "\x86\xDD"
+      @content = IPv6Packet.new(data)
     else
       # We don't recognize this type.  Oh well.
       @content = data
@@ -699,6 +794,7 @@ class MangleWindow < FXMainWindow
       pcap.print(@pcap_header)
       timestamp = @start_time
       @packets.each do |pkt|
+        pkt.checksum!    # Uncomment to test checksumming
         timestamp += pkt.time_offset
         pkt = pkt.to_s
         seconds = rltoh(timestamp.to_i)
