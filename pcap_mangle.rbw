@@ -116,11 +116,18 @@ class NestedPacket
     if frags
       frags.collect! do |x|
         frag = self.dup
+        frag.unique!
         frag.content = x
         frag
       end
     end
     return frags
+  end
+
+  # We don't want to share any metadata, so let's grab our own copy
+  def unique!
+    @hdr = @hdr.dup if @hdr
+    @error = @error.dup if @error
   end
 
   # Pass on mangling requests to deeper levels
@@ -131,6 +138,10 @@ class NestedPacket
   def mangle_port!
     return nil if @error or @content.class <= String
     @content.mangle_port!
+  end
+  def vlan_tag!(vlan_id)
+    return nil if @error or @content.class <= String
+    @content.vlan_tag!(vlan_id)
   end
 
   # The persistence of this method is handled in the next-lower layer.  Eg,
@@ -151,6 +162,12 @@ class NestedPacket
   def flow_id
     return '' if @error or @content.class <= String
     return self.class.to_s + @content.flow_id
+  end
+
+  # Insert GRE encapsulation in the first layer-2 header
+  def gre_tunnel!(ip_hdr)
+    return '' if @error or @content.class <= String
+    @content.gre_tunnel!(ip_hdr)
   end
 
 end  # of class NestedPacket
@@ -353,6 +370,8 @@ class IPv6Packet < NestedPacket
       @content = UDPPacket.new(data, false)
     elsif next_layer == 44
       @content = IPv6FragmentPacket.new(data)
+    elsif next_layer == 47
+      @content = GREPacket.new(data)
     else
       @content = data
     end
@@ -501,6 +520,8 @@ class IPPacket < NestedPacket
       @content = TCPPacket.new(data, fragmented)
     elsif next_layer == 17
       @content = UDPPacket.new(data, fragmented)
+    elsif next_layer == 47
+      @content = GREPacket.new(data)
     else
       @content = data
     end
@@ -646,6 +667,105 @@ class IPPacket < NestedPacket
 end  # of class IPPacket
 
 
+# Holds GRE header
+class GREPacket < NestedPacket
+
+  def initialize(data)
+    @error = nil
+    @hdr = ''
+    if data.length < 4
+      @error = "Truncated"
+      @content = data
+      return nil
+    end
+    if data[0] & 0x40 > 0
+      @error = "SRE!"
+      @content = data
+      return nil
+    end
+
+    # Figure out how big the header is
+    hdr_len = 4
+    hdr_len += 4 if (data[0] & 0xb0) > 0
+    hdr_len += 4 if (data[0] & 0x20) > 0
+    hdr_len += 4 if (data[0] & 0x10) > 0
+
+    # Grab our header
+    @hdr = data[0,hdr_len]
+    data[0,hdr_len] = ''
+    next_layer = @hdr[2,2]
+ 
+    # Examine the Ethernet Type field for types we recognize
+    if next_layer == "\x08\x00"
+      @content = IPPacket.new(data)
+    elsif next_layer == "\x86\xDD"
+      @content = IPv6Packet.new(data)
+    elsif next_layer == "\x81\x00" or next_layer == "\x91\x00"
+      @content = VLANPacket.new(data)
+    else
+      # We don't recognize this type.  Oh well.
+      @content = data
+    end
+  end
+  
+  def details()
+    return @error if @error
+    return ''
+  end
+
+  # We have been instructed to change our ethertype
+  def set_ethertype(new_type)
+    raise "Bad ethertype: #{new_type.inspect}" unless new_type.length == 2
+    @hdr[2,2] = new_type
+  end
+
+end  # of class GREPacket
+
+
+# Holds inner and outer VLAN headers
+class VLANPacket < NestedPacket
+  
+  def initialize(data)
+    @error = nil
+    @hdr = ''
+    if data.length < 4
+      @error = "Truncated"
+      @content = data
+      return nil
+    end
+
+    # Grab our header
+    @hdr = data[0,4]
+    data[0,4] = ''
+    next_layer = @hdr[2,2]
+ 
+    # Examine the Ethernet Type field for types we recognize
+    if next_layer == "\x08\x00"
+      @content = IPPacket.new(data)
+    elsif next_layer == "\x86\xDD"
+      @content = IPv6Packet.new(data)
+    elsif next_layer == "\x81\x00" or next_layer == "\x91\x00"
+      @content = VLANPacket.new(data)
+    else
+      # We don't recognize this type.  Oh well.
+      @content = data.dup
+    end
+  end
+
+  def details()
+    return @error if @error
+    return ''
+  end
+
+  # We have been instructed to change our ethertype
+  def set_ethertype(new_type)
+    raise "Bad ethertype: #{new_type.inspect}" unless new_type.length == 2
+    @hdr[2,2] = new_type
+  end
+
+end  # of class VLANPacket
+
+
 # Class that holds Ethernet packets.  Pretty simple, really.
 class EthernetPacket < NestedPacket
 
@@ -669,6 +789,8 @@ class EthernetPacket < NestedPacket
       @content = IPPacket.new(data)
     elsif next_layer == "\x86\xDD"
       @content = IPv6Packet.new(data)
+    elsif next_layer == "\x81\x00" or next_layer == "\x91\x00"
+      @content = VLANPacket.new(data)
     else
       # We don't recognize this type.  Oh well.
       @content = data
@@ -685,6 +807,37 @@ class EthernetPacket < NestedPacket
   def set_ethertype(new_type)
     raise "Bad ethertype: #{new_type.inspect}" unless new_type.length == 2
     @hdr[12,2] = new_type
+  end
+
+  # Put a VLAN tag in between us and the next layer
+  def vlan_tag!(vlan_id)
+    return nil if @error or @content.class <= String
+    vlan_hdr = vlan_id + @hdr[12,2]
+    if @content.class <= VLANPacket
+      set_ethertype("\x91\x00")
+    else
+      set_ethertype("\x81\x00")
+    end
+    @content = VLANPacket.new(vlan_hdr + @content.to_s)
+  end
+
+  # Put GRE encapsulation between us and the next layer
+  def gre_tunnel!(ip_hdr)
+    return nil if @error or @content.class <= String
+    gre = ip_hdr + "\x00\x00" + @hdr[12,2] + @content.to_s
+
+    # Set the Total Length and the Identification fields
+    gre[2] = (gre.length >> 8) & 0xFF
+    gre[3] = gre.length & 0xFF
+    gre[4] = rand(256).chr
+    gre[5] = rand(256).chr
+    
+    # Set our new ethertype to IP
+    set_ethertype("\x08\x00") 
+
+    # Create our encapsulated payload
+    @content = IPPacket.new(gre)
+    @content.checksum!
   end
 
 end  # of class EthernetPacket
@@ -897,6 +1050,12 @@ class MangleWindow < FXMainWindow
     button_426 = FXButton.new(button_list, "IPv4 > IPv6",
       :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
     button_426.connect(SEL_COMMAND) { ip_426 }
+    button_vlan = FXButton.new(button_list, "VLAN Tag",
+      :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
+    button_vlan.connect(SEL_COMMAND) { vlan_tag }
+    button_gre = FXButton.new(button_list, "GRE Tunnel",
+      :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
+    button_gre.connect(SEL_COMMAND) { gre_tunnel }
 
     # Table which contains our packet view
     @table = FXHorizontalFrame.new(packer, :opts => LAYOUT_FILL | FRAME_SUNKEN |
@@ -1163,6 +1322,34 @@ class MangleWindow < FXMainWindow
       if @column.itemSelected?(i)
         num = @column.getItemText(i).to_i
         @packets[num - 1].ip_426!
+        @column.setItemText(i, "#{num}: #{@packets[num - 1].inspect}")
+      end
+    end
+  end
+
+  # VLAN tag the selected packets
+  def vlan_tag
+    vlan_id = rand(16).chr + rand(256).chr
+    @column.numItems.times do |i|
+      if @column.itemSelected?(i)
+        num = @column.getItemText(i).to_i
+        @packets[num - 1].vlan_tag!(vlan_id)
+        @column.setItemText(i, "#{num}: #{@packets[num - 1].inspect}")
+      end
+    end
+  end
+
+  # Put the selected packets into an IPv4 GRE tunnel
+  def gre_tunnel
+    src = "\x0a\x01" + rand(256).chr + rand(256).chr
+    dst = "\x0a\x02" + rand(256).chr + rand(256).chr
+    ip_hdr =  "\x45\x00\xAA\xAA\xBB\xBB"  # version, lengths, ToS, ID
+    ip_hdr << "\x00\x00\x40\x2f\xCC\xCC"  # flags, ttl, proto, checksum
+    ip_hdr << src + dst
+    @column.numItems.times do |i|
+      if @column.itemSelected?(i)
+        num = @column.getItemText(i).to_i
+        @packets[num - 1].gre_tunnel!(ip_hdr)
         @column.setItemText(i, "#{num}: #{@packets[num - 1].inspect}")
       end
     end
