@@ -209,7 +209,9 @@ class TCPPacket < NestedPacket
     return @error if @error
     src = (@hdr[0] << 8) + @hdr[1]
     dst = (@hdr[2] << 8) + @hdr[3]
-    "#{src} > #{dst}"
+    opts = ''
+    opts = 'Opts ' if @hdr.length > 20
+    opts + "#{src} > #{dst}"
   end
 
   # Recalculate the checksum field for this TCP packet.  Thanks to the
@@ -548,7 +550,9 @@ class IPPacket < NestedPacket
     return @error if @error
     src = IPAddr.new(ntorl(@hdr[12,4]), Socket::AF_INET)
     dst = IPAddr.new(ntorl(@hdr[16,4]), Socket::AF_INET)
-    "#{src} > #{dst}"
+    opts = ''
+    opts = 'Opts ' if @hdr.length > 20
+    opts + "#{src} > #{dst}"
   end
 
   def checksum!
