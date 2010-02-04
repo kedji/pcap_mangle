@@ -143,6 +143,10 @@ class NestedPacket
     return nil if @error or @content.class <= String
     @content.vlan_tag!(vlan_id)
   end
+  def add_options!
+    return nil if @error or @content.class <= String
+    @content.add_options!
+  end    
 
   # The persistence of this method is handled in the next-lower layer.  Eg,
   # Ethernet handles IP's persistence.  This can be any layer, however, that
@@ -213,6 +217,7 @@ class TCPPacket < NestedPacket
   # destination address need to be provided.  *sigh*  Layering violations.
   def checksum!(ip_bytes = nil)
     return nil if @error or not ip_bytes
+    @content.checksum! unless @content.class <= String
 
     # Gather all the data on which we'll be calculating our checksum
     data = @hdr + @content.to_s
@@ -290,6 +295,7 @@ class UDPPacket < NestedPacket
   # Right now checksum just gets zeroed, which is fine for UDP
   def checksum!(ip_bytes = nil)
     return nil if @error
+    @content.checksum! unless @content.class <= String
     @hdr[6,2] = "\x00\x00"
   end
 
@@ -538,6 +544,14 @@ class IPPacket < NestedPacket
     return nil if @error
     @hdr[10,2] = "\x00\x00"  # zero the checksum initially
 
+    # If this packet contains TCP or UDP, tell it to checksum as well!
+    # And because we're nice, give it information it needs for pseudo-header.
+    if @content.class <= TCPPacket or @content.class <= UDPPacket
+      @content.checksum!(@hdr[12,8])
+    else
+      @content.checksum! unless @content.class <= String
+    end
+
     # Calculate the IP checksum
     checksum = 0
     pos = 0
@@ -552,14 +566,6 @@ class IPPacket < NestedPacket
     checksum = checksum ^ 0xFFFF
     @hdr[10] = (checksum >> 8)
     @hdr[11] = (checksum & 0xFF)
-
-    # If this packet contains TCP or UDP, tell it to checksum as well!
-    # And because we're nice, give it information it needs for pseudo-header.
-    if @content.class <= TCPPacket or @content.class <= UDPPacket
-      @content.checksum!(@hdr[12,8])
-    else
-      @content.checksum! unless @content.class <= String
-    end
   end
 
   # We have been instructed to fragment!  This should be fun.  If it's by
@@ -664,6 +670,26 @@ class IPPacket < NestedPacket
     new_packet.checksum!
     return new_packet
   end
+
+  # Add an option field to this packet.
+  def add_options!
+    return nil if @error
+    @content.add_options! unless @content.class <= String
+    return nil if @hdr.length != 20   # already have options
+
+    # Let's add a "timestamp" option field
+    @hdr << "\x44\x10\x10\x00"  # type (timestamp), length (16), offset (16)
+                                # overflow + flags (unset)
+    @hdr << "\x01\x02\x03\x04"  # internet ID
+    8.times { @hdr << rand(256).chr }  # random timestamp information
+    
+    # Now adjust our header length and total length
+    total_length = @hdr.length + @content.length
+    @hdr[0] = 0x40 + (@hdr.length >> 2)
+    @hdr[2] = (total_length >> 8) & 0xFF
+    @hdr[3] = total_length & 0xFF
+  end
+
 end  # of class IPPacket
 
 
@@ -1004,8 +1030,8 @@ end  # of FragmentDialog
 
 # Main GUI window
 class MangleWindow < FXMainWindow
-  WINDOW_HEIGHT = 320
-  WINDOW_WIDTH  = 520
+  WINDOW_HEIGHT = 360
+  WINDOW_WIDTH  = 540
   WINDOW_TITLE  = "Pcap Mangle"
   BUTTON_WIDTH  = 100
 
@@ -1056,6 +1082,9 @@ class MangleWindow < FXMainWindow
     button_gre = FXButton.new(button_list, "GRE Tunnel",
       :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
     button_gre.connect(SEL_COMMAND) { gre_tunnel }
+    button_opts = FXButton.new(button_list, "Add Options",
+      :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
+    button_opts.connect(SEL_COMMAND) { add_options }
 
     # Table which contains our packet view
     @table = FXHorizontalFrame.new(packer, :opts => LAYOUT_FILL | FRAME_SUNKEN |
@@ -1350,6 +1379,20 @@ class MangleWindow < FXMainWindow
       if @column.itemSelected?(i)
         num = @column.getItemText(i).to_i
         @packets[num - 1].gre_tunnel!(ip_hdr)
+        @column.setItemText(i, "#{num}: #{@packets[num - 1].inspect}")
+      end
+    end
+  end
+
+  # Add options to every header type that supports it.  Those that support
+  # it will define an add_options!() method.  All others will merely pass
+  # the request along.  After calling this, call checksum!
+  def add_options
+    @column.numItems.times do |i|
+      if @column.itemSelected?(i)
+        num = @column.getItemText(i).to_i
+        @packets[num - 1].add_options!
+        @packets[num - 1].checksum!
         @column.setItemText(i, "#{num}: #{@packets[num - 1].inspect}")
       end
     end
