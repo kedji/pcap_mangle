@@ -256,6 +256,17 @@ class TCPPacket < NestedPacket
     @hdr[2,2] = MD5::digest(@hdr[2,2])[0,2]
   end
 
+  # Add an option field to this packet.
+  def add_options!
+    return nil if @error
+    @content.add_options! unless @content.class <= String
+    return nil if @hdr.length != 20   # already have options
+
+    # Add four padding bytes as options
+    @hdr << "\x02\x04\x05\xb4\x01\x01\x04\x02"
+    @hdr[12] = (@hdr.length << 2)
+  end
+
 end  # of class TCPPacket
 
 
