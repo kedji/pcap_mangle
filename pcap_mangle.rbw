@@ -1147,7 +1147,17 @@ class MangleWindow < FXMainWindow
   end
 
   # Load the given file or, absent that, launch a modal file dialog
+  # Optionally the last argument can be an integer [or something supporting
+  # the .to_i() method] specifying the maximum number of packets to read
+  # from the given capture(s).
   def load_pcap(*files)
+    max_packets = 0xFFFFFFFF
+
+    # Did the user instruct us to limit our packet reading?
+    if files.length > 1 and files.last.to_i.to_s == files.last.to_s
+      max_packets = files.pop.to_i
+    end
+
     if files.empty?
       dialog = FXFileDialog.new(self, "Open Pcap Files")
       dialog.selectMode = SELECTFILE_MULTIPLE;
@@ -1168,12 +1178,14 @@ class MangleWindow < FXMainWindow
         file_len = pcap.lstat.size - 15
         while pcap.pos < file_len do
           pkt_list << Packet.new(pcap, timestamp)
+          break if pkt_list.length + @packets.length == max_packets
           timestamp += pkt_list.last.time_offset
         end
       end
       st_time = pkt_list.first.get_init_time()
       @start_time = st_time if @packets.empty?
       @packets += pkt_list
+      break if @packets.length == max_packets
     end  # of files.eaach
     
     # Complete update of our display
