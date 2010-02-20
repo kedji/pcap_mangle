@@ -57,8 +57,8 @@ end  # of module EndianMess
 class NestedPacket
   include EndianMess
 
-  attr_reader :content
-  attr_writer :content
+  attr_reader :content, :hdr
+  attr_writer :content, :hdr
 
   # Recurses until @content is merely a String.  Grabs current-level content
   # until then by calling the details() method.
@@ -122,6 +122,23 @@ class NestedPacket
       end
     end
     return frags
+  end
+
+  # Pass segmentation demands down until we hit an appropriate level 4
+  # protocol.  On the way back up, if segmentation has occurred then an array
+  # will be returned.  Prepend our header to each element and return.
+  def segment!
+    return nil if @error or @content.class <= String
+    segs = @content.segment!
+    if segs
+      segs.collect! do |x|
+        seg = self.dup
+        seg.unique!
+        seg.content = x
+        seg
+      end
+    end
+    return segs
   end
 
   # We don't want to share any metadata, so let's grab our own copy
@@ -267,6 +284,21 @@ class TCPPacket < NestedPacket
     # Add four padding bytes as options
     @hdr << "\x02\x04\x05\xb4\x01\x01\x04\x02"
     @hdr[12] = (@hdr.length << 2)
+  end
+
+  # If this packet has a payload, segment into a swarm of one-byte chunks.
+  def segment!
+    return nil if @content.length < 2 or @error
+    payload = @content.to_s
+    seq = ntorl(@hdr[4,4])
+    segments = []
+    payload.length.times do |i|
+      synth = @hdr.dup
+      synth[4,4] = rlton(seq)
+      seq = (seq + 1) & 0xFFFFFFFF
+      segments << TCPPacket.new(synth + payload[i,1])
+    end
+    return segments
   end
 
 end  # of class TCPPacket
@@ -510,6 +542,24 @@ class IPv6Packet < NestedPacket
       IPv6Packet.new(frag + frag_hdr + chunk)
     end
   end
+
+  # If the next layer is TCP, let's fragment it and then re-checksum.
+  # Remember: the IPv6 header denotes the length of the TCP payload
+  def segment!
+    return nil if @error or @content.class <= String
+    segs = @content.segment!
+    if segs
+      segs.collect! do |x|
+        seg = self.dup
+        seg.unique!
+        seg.content = x
+        seg.hdr[4,2] = rlton(x.length)[2,2]
+        seg
+      end
+    end
+    return segs    
+  end
+
 end  # of class IPv6Packet
 
 
@@ -644,6 +694,23 @@ class IPPacket < NestedPacket
       frag.checksum!
       frag
     end
+  end
+
+  # If the next layer is TCP, let's fragment it and then re-checksum.
+  # Remember: the IP header denotes the length of the TCP payload
+  def segment!
+    return nil if @error or @content.class <= String
+    segs = @content.segment!
+    if segs
+      segs.collect! do |x|
+        seg = self.dup
+        seg.unique!
+        seg.content = x
+        seg.hdr[2,2] = rlton(seg.hdr.length + x.length)[2,2]
+        seg
+      end
+    end
+    return segs    
   end
 
   # Contribute our piece to unique flow identification
@@ -896,6 +963,7 @@ class Packet < NestedPacket
     @content = nil           # nested collection of headers and data
     @orig_len = 0            # original length of original packet
     @error = nil
+    @hdr = nil
 
     # Handle reading one frame from a file
     if src.class <= File
@@ -1079,6 +1147,9 @@ class MangleWindow < FXMainWindow
     button_fragment = FXButton.new(button_list, "&Fragment",
       :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
     button_fragment.connect(SEL_COMMAND) { fragment_packets }
+    button_segment = FXButton.new(button_list, "Segment",
+      :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
+    button_segment.connect(SEL_COMMAND) { segment_packets }
     button_follow = FXButton.new(button_list, "Follow",
       :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
     button_follow.connect(SEL_COMMAND) { follow_flows }
@@ -1438,6 +1509,28 @@ class MangleWindow < FXMainWindow
       end
     end
   end
+
+  # Break each selected data-bearing packet into segments (OSI layer 4
+  # segmentation) containing one payload byte per packet.  TCP Only!
+  def segment_packets
+    new_packets = []
+    @column.numItems.times do |i|
+      pkt = @packets[@column.getItemText(i).to_i - 1]
+      if @column.itemSelected?(i)
+        frags = pkt.segment!
+        if frags
+          new_packets += frags
+        else
+          new_packets << pkt
+        end
+      else
+        new_packets << pkt
+      end
+    end
+    @packets = new_packets
+    redraw_packets
+  end
+
 end  # of class MangleWindow
 
 
