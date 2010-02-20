@@ -1100,6 +1100,9 @@ class MangleWindow < FXMainWindow
     button_opts = FXButton.new(button_list, "Add Options",
       :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
     button_opts.connect(SEL_COMMAND) { add_options }
+    button_inv = FXButton.new(button_list, "Invert Sel",
+      :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
+    button_inv.connect(SEL_COMMAND) { invert_selection }
 
     # Table which contains our packet view
     @table = FXHorizontalFrame.new(packer, :opts => LAYOUT_FILL | FRAME_SUNKEN |
@@ -1425,6 +1428,16 @@ class MangleWindow < FXMainWindow
     end
   end
 
+  # Select the unselected items and vice-versa
+  def invert_selection
+    @column.numItems.times do |i|
+      if @column.itemSelected?(i)
+        @column.deselectItem(i)
+      else
+        @column.selectItem(i)
+      end
+    end
+  end
 end  # of class MangleWindow
 
 
