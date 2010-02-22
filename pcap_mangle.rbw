@@ -1113,8 +1113,8 @@ end  # of FragmentDialog
 
 # Main GUI window
 class MangleWindow < FXMainWindow
-  WINDOW_HEIGHT = 360
-  WINDOW_WIDTH  = 540
+  WINDOW_HEIGHT = 390
+  WINDOW_WIDTH  = 590
   WINDOW_TITLE  = "Pcap Mangle"
   BUTTON_WIDTH  = 100
 
