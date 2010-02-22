@@ -1113,8 +1113,8 @@ end  # of FragmentDialog
 
 # Main GUI window
 class MangleWindow < FXMainWindow
-  WINDOW_HEIGHT = 390
-  WINDOW_WIDTH  = 590
+  WINDOW_HEIGHT = 440
+  WINDOW_WIDTH  = 600
   WINDOW_TITLE  = "Pcap Mangle"
   BUTTON_WIDTH  = 100
 
@@ -1174,6 +1174,9 @@ class MangleWindow < FXMainWindow
     button_inv = FXButton.new(button_list, "Invert Sel",
       :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
     button_inv.connect(SEL_COMMAND) { invert_selection }
+    button_shuff4 = FXButton.new(button_list, "Shuffle 4",
+      :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
+    button_shuff4.connect(SEL_COMMAND) { shuffle_four }
 
     # Table which contains our packet view
     @table = FXHorizontalFrame.new(packer, :opts => LAYOUT_FILL | FRAME_SUNKEN |
@@ -1193,6 +1196,26 @@ class MangleWindow < FXMainWindow
   end  # of initialize
 
   attr_reader :frag_options
+
+  # Return a list of selected list indices
+  def get_selected
+    sel = []
+    @column.numItems.times do |i|
+      sel << i if @column.itemSelected?(i)
+    end
+    return sel
+  end
+
+  # Set the list of selected indicies
+  def set_selected(sel)
+    @column.numItems.times do |i|
+      if sel.include?(i)
+        @column.selectItem(i)
+      else
+        @column.deselectItem(i)
+      end
+    end
+  end
 
   # Choose a file into which we save our packet capture
   def save_pcap
@@ -1529,6 +1552,29 @@ class MangleWindow < FXMainWindow
     end
     @packets = new_packets
     redraw_packets
+  end
+
+  # Shuffle the selected packets in groups of four.  This preserves general
+  # order while still ensuring small-scale reordering.
+  def shuffle_four
+    shuff = []
+    sel = get_selected
+    sel.each do |i|
+      shuff << i
+      if shuff.length == 4 || i == sel.last
+        res = shuff.dup
+        res.length.times do |x|
+          y = rand(res.length)
+          res[x], res[y] = res[y], res[x] unless x == y
+        end
+        res = res.collect { |x| @column.getItemText(x) }
+        res.length.times do |x|
+          @column.setItemText(shuff[x], res[x])
+        end
+        shuff = []
+      end
+    end
+    set_selected(sel)
   end
 
 end  # of class MangleWindow
