@@ -489,8 +489,6 @@ class IPv6Packet < NestedPacket
     # If it's too short or already fragmented then don't fragment.  Also, for
     # now let's only fragment TCP and UDP packets
     return nil if @content.length < 11
-    return nil unless @content.class == TCPPacket or
-                      @content.class == UDPPacket
 
     # Fragment based on requested fragmentation type
     payload = @content.to_s
