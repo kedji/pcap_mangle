@@ -554,6 +554,7 @@ class IPv6Packet < NestedPacket
         seg.unique!
         seg.content = x
         seg.hdr[4,2] = rlton(x.length)[2,2]
+        seg.checksum!
         seg
       end
     end
@@ -698,6 +699,7 @@ class IPPacket < NestedPacket
 
   # If the next layer is TCP, let's fragment it and then re-checksum.
   # Remember: the IP header denotes the length of the TCP payload
+  # NOTE:  For fragmentation support we need to randomize the packet ID
   def segment!
     return nil if @error or @content.class <= String
     segs = @content.segment!
@@ -707,7 +709,9 @@ class IPPacket < NestedPacket
         seg.unique!
         seg.content = x
         seg.hdr[2,2] = rlton(seg.hdr.length + x.length)[2,2]
-        seg
+        seg.hdr[4,2] = rand(256).chr + rand(256).chr
+        seg.checksum!
+       seg
       end
     end
     return segs    
@@ -1232,7 +1236,7 @@ class MangleWindow < FXMainWindow
       pcap.print(@pcap_header)
       timestamp = @start_time
       @packets.each do |pkt|
-        pkt.checksum!    # Uncomment to test checksumming
+        #pkt.checksum!    # Uncomment to test checksumming
         timestamp += pkt.time_offset
         pkt = pkt.to_s
         seconds = rltoh(timestamp.to_i)
