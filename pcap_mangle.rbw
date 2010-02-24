@@ -1029,6 +1029,24 @@ end  # of class Packet
 
 ######  Graphical User Interface  ######
 
+# Generic text input dialog.  Pass in the title of the window in a string
+# variable, which will then get set to the text typed by the user when the
+# dialog returns.
+class InputDialog < FXDialogBox
+
+  def initialize(owner, text)
+    super(owner, text.dup, DECOR_TITLE | DECOR_CLOSE)
+    @ret = text
+    @input = FXTextField.new(self, 16, :opts => FRAME_SUNKEN)
+    @input.connect(SEL_COMMAND) do
+      @ret.replace(@input.text)
+      self.handle(self, MKUINT(FXDialogBox::ID_ACCEPT, SEL_COMMAND), nil)
+    end
+  end
+
+end  # of InputDialog class
+
+
 # Packet fragmentation dialog
 class FragmentDialog < FXDialogBox
   WINDOW_HEIGHT = 120
@@ -1113,6 +1131,7 @@ class FragmentDialog < FXDialogBox
 
 end  # of FragmentDialog
 
+
 # Main GUI window
 class MangleWindow < FXMainWindow
   WINDOW_HEIGHT = 440
@@ -1179,6 +1198,9 @@ class MangleWindow < FXMainWindow
     button_shuff4 = FXButton.new(button_list, "Shuffle 4",
       :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
     button_shuff4.connect(SEL_COMMAND) { shuffle_four }
+    button_search = FXButton.new(button_list, "Text Search",
+      :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
+    button_search.connect(SEL_COMMAND) { text_search }
 
     # Table which contains our packet view
     @table = FXHorizontalFrame.new(packer, :opts => LAYOUT_FILL | FRAME_SUNKEN |
@@ -1577,6 +1599,61 @@ class MangleWindow < FXMainWindow
       end
     end
     set_selected(sel)
+  end
+
+  # Select all packets which contain the given text.  Text can include hex chars
+  def text_search
+    text = "Search for:"
+    InputDialog.new(self, text).execute
+    return nil if text.empty?
+
+    # Convert "\xHH" to a raw byte denoted by the two hex digits HH
+    res = ''
+    state = :normal
+    hex = ''
+    text.each_byte do |c|
+      if state == :normal
+        if c.chr == '\\'
+          state = :slash
+        else
+          res << c.chr
+        end
+      elsif state == :slash
+        if c.chr == 'x'
+          state = :hex
+          hex = ''
+        else
+          state = :normal
+          if c.chr == 'n'
+            res << "\n"
+          elsif c.chr == 'r'
+            res << "\r"
+          elsif c.chr == 't'
+            res << "\t"
+          elsif c.chr == '0'
+            res << "\0"
+          else
+            res << c.chr
+          end
+        end
+      elsif state == :hex
+        hex << c.chr
+        if hex.length == 2
+          state = :normal
+          res << hex.to_i(16).chr
+        end
+      end
+    end
+
+    # Perform the actual search, highlighting (and un-highlighting) as we go.
+    @column.numItems.times do |i|
+      pkt = @packets[@column.getItemText(i).to_i - 1].to_s
+      if pkt.include? res
+        @column.selectItem(i)
+      else
+        @column.deselectItem(i)
+      end        
+    end
   end
 
 end  # of class MangleWindow
