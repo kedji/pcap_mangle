@@ -1034,10 +1034,13 @@ end  # of class Packet
 # dialog returns.
 class InputDialog < FXDialogBox
 
-  def initialize(owner, text)
-    super(owner, text.dup, DECOR_TITLE | DECOR_CLOSE)
+  def initialize(owner, title, text)
+    super(owner, title, DECOR_TITLE | DECOR_CLOSE)
     @ret = text
-    @input = FXTextField.new(self, 16, :opts => FRAME_SUNKEN)
+    @input = FXTextField.new(self, 24, :opts => FRAME_SUNKEN)
+    @input.text = text
+
+    # The ENTER key returns the current textfield string
     @input.connect(SEL_COMMAND) do
       @ret.replace(@input.text)
       self.handle(self, MKUINT(FXDialogBox::ID_ACCEPT, SEL_COMMAND), nil)
@@ -1201,6 +1204,9 @@ class MangleWindow < FXMainWindow
     button_search = FXButton.new(button_list, "Text Search",
       :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
     button_search.connect(SEL_COMMAND) { text_search }
+    button_time = FXButton.new(button_list, "Timestamp",
+      :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
+    button_time.connect(SEL_COMMAND) { adjust_time_delta }
 
     # Table which contains our packet view
     @table = FXHorizontalFrame.new(packer, :opts => LAYOUT_FILL | FRAME_SUNKEN |
@@ -1603,8 +1609,8 @@ class MangleWindow < FXMainWindow
 
   # Select all packets which contain the given text.  Text can include hex chars
   def text_search
-    text = "Search for:"
-    InputDialog.new(self, text).execute
+    text = ''
+    InputDialog.new(self, "Search for:", text).execute
     return nil if text.empty?
 
     # Convert "\xHH" to a raw byte denoted by the two hex digits HH
@@ -1653,6 +1659,32 @@ class MangleWindow < FXMainWindow
       else
         @column.deselectItem(i)
       end        
+    end
+  end
+
+  # Adjust the timestamp (seconds)
+  def adjust_time_delta
+    pkt = nil
+    @column.numItems.times do |i|
+      if @column.itemSelected?(i)
+        pkt = @packets[@column.getItemText(i).to_i - 1]
+        break
+      end
+    end
+
+    # Did we find a selected packet?  If so, adjust its timestamp
+    if pkt
+      text = (1000 * pkt.time_offset).to_s
+      InputDialog.new(self, "Delta (ms):", text).execute
+      return nil if text.empty?
+      pkt.time_offset = text.to_f / 1000
+
+    # We didn't find a timestamp?  Adjust the file's overall start time
+    else
+      text = @start_time.to_s
+      InputDialog.new(self, "Timestamp:", text).execute
+      return nil if text.empty?
+      @start_time = text.to_i
     end
   end
 
