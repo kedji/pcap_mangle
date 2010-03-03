@@ -14,6 +14,7 @@ require 'rubygems' rescue nil
 require 'fox16'
 require 'ipaddr'
 require 'md5'
+require 'set'
 
 include Fox
 
@@ -979,6 +980,12 @@ class Packet < NestedPacket
       # Now get the payload of this frame
       payload = src.read(cap_len)
       @content = EthernetPacket.new(payload)
+
+    # Or copy ourselves from another Packet instance...
+    elsif src.class == Packet
+      @time_offset = src.time_offset
+      @orig_len = src.orig_len
+      @content = EthernetPacket.new(src.content.to_s)
     end
   end
 
@@ -1022,6 +1029,12 @@ class Packet < NestedPacket
       end
     end
     return frags
+  end
+
+  # Create a hard copy of ourselves (a new Packet instance) from the string
+  # representation of ourselves.
+  def duplicate
+    Packet.new(self, nil)
   end
 
 end  # of class Packet
@@ -1427,9 +1440,17 @@ class MangleWindow < FXMainWindow
   # Modify our actual packet list so it matches the display
   def commit_order!
     new_packets = []
+    read_packets = Set.new
     @column.numItems.times do |i|
       pkt_index = @column.getItemText(i).to_i - 1
-      new_packets << @packets[pkt_index]
+
+      # Make hard copies on duplicate source indicies to prevent sharing members
+      if read_packets.include?(pkt_index)
+        new_packets << @packets[pkt_index].duplicate
+      else
+        new_packets << @packets[pkt_index]
+        read_packets.add pkt_index
+      end
     end
     @packets = new_packets
     redraw_packets
