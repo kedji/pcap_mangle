@@ -1137,8 +1137,8 @@ end  # of FragmentDialog
 
 # Main GUI window
 class MangleWindow < FXMainWindow
-  WINDOW_HEIGHT = 440
-  WINDOW_WIDTH  = 600
+  WINDOW_HEIGHT = 400
+  WINDOW_WIDTH  = 660
   WINDOW_TITLE  = "Pcap Mangle"
   BUTTON_WIDTH  = 100
 
@@ -1153,7 +1153,7 @@ class MangleWindow < FXMainWindow
     super(app, WINDOW_TITLE, :width => WINDOW_WIDTH, :height => WINDOW_HEIGHT)
     packer = FXPacker.new(self, :opts => LAYOUT_FILL)
 
-    # Add all the useful mangle buttons
+    # Add all the useful mangle buttons - right column
     button_list = FXPacker.new(packer, :opts => LAYOUT_FILL_Y |
       LAYOUT_SIDE_RIGHT | LAYOUT_FIX_WIDTH, :width => BUTTON_WIDTH)
     button_open = FXButton.new(button_list, "&Open", :opts => LAYOUT_SIDE_TOP |
@@ -1168,15 +1168,28 @@ class MangleWindow < FXMainWindow
     button_revert = FXButton.new(button_list, "&Revert",
       :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
     button_revert.connect(SEL_COMMAND) { redraw_packets }
+    button_follow = FXButton.new(button_list, "Follow",
+      :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
+    button_follow.connect(SEL_COMMAND) { follow_flows }
+    button_inv = FXButton.new(button_list, "Invert Sel",
+      :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
+    button_inv.connect(SEL_COMMAND) { invert_selection }
+    button_search = FXButton.new(button_list, "Text Search",
+      :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
+    button_search.connect(SEL_COMMAND) { text_search }
+
+    # Left column
+    button_list = FXPacker.new(packer, :opts => LAYOUT_FILL_Y |
+      LAYOUT_SIDE_RIGHT | LAYOUT_FIX_WIDTH, :width => BUTTON_WIDTH)
+    button_time = FXButton.new(button_list, "Timestamp",
+      :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
+    button_time.connect(SEL_COMMAND) { adjust_time_delta }
     button_fragment = FXButton.new(button_list, "&Fragment",
       :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
     button_fragment.connect(SEL_COMMAND) { fragment_packets }
     button_segment = FXButton.new(button_list, "Segment",
       :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
     button_segment.connect(SEL_COMMAND) { segment_packets }
-    button_follow = FXButton.new(button_list, "Follow",
-      :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
-    button_follow.connect(SEL_COMMAND) { follow_flows }
     button_rand_ip = FXButton.new(button_list, "Mangle IPs",
       :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
     button_rand_ip.connect(SEL_COMMAND) { mangle_ip }
@@ -1195,18 +1208,9 @@ class MangleWindow < FXMainWindow
     button_opts = FXButton.new(button_list, "Add Options",
       :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
     button_opts.connect(SEL_COMMAND) { add_options }
-    button_inv = FXButton.new(button_list, "Invert Sel",
-      :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
-    button_inv.connect(SEL_COMMAND) { invert_selection }
     button_shuff4 = FXButton.new(button_list, "Shuffle 4",
       :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
     button_shuff4.connect(SEL_COMMAND) { shuffle_four }
-    button_search = FXButton.new(button_list, "Text Search",
-      :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
-    button_search.connect(SEL_COMMAND) { text_search }
-    button_time = FXButton.new(button_list, "Timestamp",
-      :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
-    button_time.connect(SEL_COMMAND) { adjust_time_delta }
 
     # Table which contains our packet view
     @table = FXHorizontalFrame.new(packer, :opts => LAYOUT_FILL | FRAME_SUNKEN |
