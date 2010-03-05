@@ -1267,6 +1267,17 @@ class MangleWindow < FXMainWindow
     end
   end
 
+  # Iterator that yields row number (starts at 0) and its packet number
+  # (starts at 1) for ever selected row in the GUI.
+  def selected_rows
+    @column.numItems.times do |i|
+      if @column.itemSelected?(i)
+        num = @column.getItemText(i).to_i - 1
+        yield i, num
+      end
+    end
+  end
+
   # Choose a file into which we save our packet capture
   def save_pcap
     return nil if @packets.empty?
@@ -1372,11 +1383,9 @@ class MangleWindow < FXMainWindow
   # Move all the selected packets up one space, unless there's no room
   def slide_selection_up
     return nil if @column.currentItem < 0
-    @column.numItems.times do |i|
-      if @column.itemSelected?(i)
-        return nil if i == 0
-        @column.moveItem(i - 1, i)
-      end
+    selected_rows do |i,_|
+      return nil if i == 0
+      @column.moveItem(i - 1, i)
     end
   end
 
@@ -1481,11 +1490,9 @@ class MangleWindow < FXMainWindow
     flows = {}
 
     # First build our follow hash
-    @column.numItems.times do |i|
-      if @column.itemSelected?(i)
-        flow = @packets[@column.getItemText(i).to_i - 1].flow_id
-        flows[flow] = true
-      end
+    selected_rows do |i,_|
+      flow = @packets[@column.getItemText(i).to_i - 1].flow_id
+      flows[flow] = true
     end
     return nil if flows.empty?
 
@@ -1501,47 +1508,35 @@ class MangleWindow < FXMainWindow
   # Deterministically mangle all selected IP packets
   def mangle_ip
     salt = (0..16).to_a.collect { rand(256).chr }.join
-    @column.numItems.times do |i|
-      if @column.itemSelected?(i)
-        num = @column.getItemText(i).to_i
-        @packets[num - 1].mangle_ip!(salt)
-        @column.setItemText(i, "#{num}: #{@packets[num - 1].inspect}")
-      end
+    selected_rows do |i, num|
+      @packets[num].mangle_ip!(salt)
+      @column.setItemText(i, "#{num + 1}: #{@packets[num].inspect}")
     end
   end
 
   # Deterministically mangle all selected TCP or UDP packets
   def mangle_port
     salt = (0..16).to_a.collect { rand(256).chr }.join
-    @column.numItems.times do |i|
-      if @column.itemSelected?(i)
-        num = @column.getItemText(i).to_i
-        @packets[num - 1].mangle_port!(salt)
-        @column.setItemText(i, "#{num}: #{@packets[num - 1].inspect}")
-      end
+    selected_rows do |i, num|
+      @packets[num].mangle_port!(salt)
+      @column.setItemText(i, "#{num + 1}: #{@packets[num].inspect}")
     end
   end
 
   # Convert selected IPv4 packets to IPv6 packets.  Doesn't work on fragments.
   def ip_426
-    @column.numItems.times do |i|
-      if @column.itemSelected?(i)
-        num = @column.getItemText(i).to_i
-        @packets[num - 1].ip_426!
-        @column.setItemText(i, "#{num}: #{@packets[num - 1].inspect}")
-      end
+    selected_rows do |i, num|
+      @packets[num].ip_426!
+      @column.setItemText(i, "#{num + 1}: #{@packets[num].inspect}")
     end
   end
 
   # VLAN tag the selected packets
   def vlan_tag
     vlan_id = rand(16).chr + rand(256).chr
-    @column.numItems.times do |i|
-      if @column.itemSelected?(i)
-        num = @column.getItemText(i).to_i
-        @packets[num - 1].vlan_tag!(vlan_id)
-        @column.setItemText(i, "#{num}: #{@packets[num - 1].inspect}")
-      end
+    selected_rows do |i, num|
+      @packets[num].vlan_tag!(vlan_id)
+      @column.setItemText(i, "#{num + 1}: #{@packets[num].inspect}")
     end
   end
 
@@ -1552,12 +1547,9 @@ class MangleWindow < FXMainWindow
     ip_hdr =  "\x45\x00\xAA\xAA\xBB\xBB"  # version, lengths, ToS, ID
     ip_hdr << "\x00\x00\x40\x2f\xCC\xCC"  # flags, ttl, proto, checksum
     ip_hdr << src + dst
-    @column.numItems.times do |i|
-      if @column.itemSelected?(i)
-        num = @column.getItemText(i).to_i
-        @packets[num - 1].gre_tunnel!(ip_hdr)
-        @column.setItemText(i, "#{num}: #{@packets[num - 1].inspect}")
-      end
+    selected_rows do |i, num|
+      @packets[num].gre_tunnel!(ip_hdr)
+      @column.setItemText(i, "#{num + 1}: #{@packets[num].inspect}")
     end
   end
 
@@ -1565,13 +1557,10 @@ class MangleWindow < FXMainWindow
   # it will define an add_options!() method.  All others will merely pass
   # the request along.  After calling this, call checksum!
   def add_options
-    @column.numItems.times do |i|
-      if @column.itemSelected?(i)
-        num = @column.getItemText(i).to_i
-        @packets[num - 1].add_options!
-        @packets[num - 1].checksum!
-        @column.setItemText(i, "#{num}: #{@packets[num - 1].inspect}")
-      end
+    selected_rows do |i, num|
+      @packets[num].add_options!
+      @packets[num].checksum!
+      @column.setItemText(i, "#{num + 1}: #{@packets[num].inspect}")
     end
   end
 
@@ -1688,11 +1677,9 @@ class MangleWindow < FXMainWindow
   # Adjust the timestamp (seconds)
   def adjust_time_delta
     pkt = nil
-    @column.numItems.times do |i|
-      if @column.itemSelected?(i)
-        pkt = @packets[@column.getItemText(i).to_i - 1]
-        break
-      end
+    selected_rows do |i, num|
+      pkt = @packets[num]
+      break
     end
 
     # Did we find a selected packet?  If so, adjust its timestamp
