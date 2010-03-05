@@ -149,13 +149,13 @@ class NestedPacket
   end
 
   # Pass on mangling requests to deeper levels
-  def mangle_ip!
+  def mangle_ip!(salt)
     return nil if @error or @content.class <= String
-    @content.mangle_ip!
+    @content.mangle_ip!(salt)
   end
-  def mangle_port!
+  def mangle_port!(salt)
     return nil if @error or @content.class <= String
-    @content.mangle_port!
+    @content.mangle_port!(salt)
   end
   def vlan_tag!(vlan_id)
     return nil if @error or @content.class <= String
@@ -270,10 +270,10 @@ class TCPPacket < NestedPacket
   end
 
   # Deterministically "randomize" the source and destination ports
-  def mangle_port!
+  def mangle_port!(salt)
     return nil if @error
-    @hdr[0,2] = MD5::digest(@hdr[0,2])[0,2]
-    @hdr[2,2] = MD5::digest(@hdr[2,2])[0,2]
+    @hdr[0,2] = MD5::digest(@hdr[0,2] + salt)[0,2]
+    @hdr[2,2] = MD5::digest(@hdr[2,2] + salt)[0,2]
   end
 
   # Add an option field to this packet.
@@ -353,8 +353,8 @@ class UDPPacket < NestedPacket
   # Deterministically "randomize" the source and destination ports
   def mangle_port!
     return nil if @error
-    @hdr[0,2] = MD5::digest(@hdr[0,2])[0,2]
-    @hdr[2,2] = MD5::digest(@hdr[2,2])[0,2]
+    @hdr[0,2] = MD5::digest(@hdr[0,2] + salt)[0,2]
+    @hdr[2,2] = MD5::digest(@hdr[2,2] + salt)[0,2]
   end
 
 end  # of class UDPPacket
@@ -464,10 +464,10 @@ class IPv6Packet < NestedPacket
   end
 
   # Deterministically "randomize" the source and destination IP addresses
-  def mangle_ip!
+  def mangle_ip!(salt)
     return nil if @error
-    @hdr[8,16] = MD5::digest(@hdr[8,16])
-    @hdr[24,16] = MD5::digest(@hdr[24,16])
+    @hdr[8,16] = MD5::digest(@hdr[8,16] + salt)
+    @hdr[24,16] = MD5::digest(@hdr[24,16] + salt)
     @hdr[10,10] = "\0" * 10
     @hdr[26,10] = "\0" * 10
     checksum!
@@ -475,10 +475,10 @@ class IPv6Packet < NestedPacket
 
   # TCP or UDP above us wants mangled ports, but we're responsible for
   # checksumming.
-  def mangle_port!
+  def mangle_port!(salt)
     return nil unless @content.class == TCPPacket or
                       @content.class == UDPPacket
-    @content.mangle_port!
+    @content.mangle_port!(salt)
     checksum!
   end
 
@@ -727,19 +727,19 @@ class IPPacket < NestedPacket
   end
 
   # Deterministically "randomize" the source and destination IP addresses
-  def mangle_ip!
+  def mangle_ip!(salt)
     return nil if @error
-    @hdr[12,4] = MD5::digest(@hdr[12,4])[0,4]
-    @hdr[16,4] = MD5::digest(@hdr[16,4])[0,4]
+    @hdr[12,4] = MD5::digest(@hdr[12,4] + salt)[0,4]
+    @hdr[16,4] = MD5::digest(@hdr[16,4] + salt)[0,4]
     checksum!
   end
 
   # TCP or UDP above us wants mangled ports, but we're responsible for
   # checksumming.
-  def mangle_port!
+  def mangle_port!(salt)
     return nil if @error or (@hdr[6] & 0xBF) + @hdr[7] > 0 or
                   (@content.class != TCPPacket and @content.class != UDPPacket)
-    @content.mangle_port!
+    @content.mangle_port!(salt)
     checksum!
   end
 
@@ -1224,6 +1224,9 @@ class MangleWindow < FXMainWindow
     button_shuff4 = FXButton.new(button_list, "Shuffle 4",
       :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
     button_shuff4.connect(SEL_COMMAND) { shuffle_four }
+    button_weave = FXButton.new(button_list, "Weave Copy",
+      :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
+    button_weave.connect(SEL_COMMAND) { interleave }
 
     # Table which contains our packet view
     @table = FXHorizontalFrame.new(packer, :opts => LAYOUT_FILL | FRAME_SUNKEN |
@@ -1422,14 +1425,7 @@ class MangleWindow < FXMainWindow
     end
 
     # Now go back and highlight all the new items
-    @column.numItems.times do |i|
-      if select_list.include?(i)
-        @column.selectItem(i)
-      else
-        @column.deselectItem(i)
-      end
-      @column.currentItem = select_list.first
-    end
+    set_selected(select_list)
   end
 
   # Just don't select anything
@@ -1504,10 +1500,11 @@ class MangleWindow < FXMainWindow
 
   # Deterministically mangle all selected IP packets
   def mangle_ip
+    salt = (0..16).to_a.collect { rand(256).chr }.join
     @column.numItems.times do |i|
       if @column.itemSelected?(i)
         num = @column.getItemText(i).to_i
-        @packets[num - 1].mangle_ip!
+        @packets[num - 1].mangle_ip!(salt)
         @column.setItemText(i, "#{num}: #{@packets[num - 1].inspect}")
       end
     end
@@ -1515,10 +1512,11 @@ class MangleWindow < FXMainWindow
 
   # Deterministically mangle all selected TCP or UDP packets
   def mangle_port
+    salt = (0..16).to_a.collect { rand(256).chr }.join
     @column.numItems.times do |i|
       if @column.itemSelected?(i)
         num = @column.getItemText(i).to_i
-        @packets[num - 1].mangle_port!
+        @packets[num - 1].mangle_port!(salt)
         @column.setItemText(i, "#{num}: #{@packets[num - 1].inspect}")
       end
     end
@@ -1711,6 +1709,30 @@ class MangleWindow < FXMainWindow
       return nil if text.empty?
       @start_time = text.to_i
     end
+  end
+
+  # Create a mangled copy of each selected packet
+  def interleave
+    select_list = []
+    copy_list = get_selected()
+    coff = 0
+
+    copy_list.each do |i|
+      pkt_index = @column.getItemText(i + coff).to_i - 1
+      @packets << @packets[pkt_index].duplicate
+      pkt_text = "#{@packets.length}: #{@packets.last.inspect}"
+      coff += 1
+      if i + coff == @column.numItems
+        @column.appendItem(pkt_text)
+      else
+        @column.insertItem(i + coff, FXListItem.new(pkt_text))
+      end
+      select_list << i + coff
+    end
+
+    # Now go back and highlight all the new items, then mangle those packets
+    set_selected(select_list)
+    mangle_ip
   end
 
 end  # of class MangleWindow
