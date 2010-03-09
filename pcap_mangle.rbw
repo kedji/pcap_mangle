@@ -466,10 +466,20 @@ class IPv6Packet < NestedPacket
   # Deterministically "randomize" the source and destination IP addresses
   def mangle_ip!(salt)
     return nil if @error
-    @hdr[8,16] = MD5::digest(@hdr[8,16] + salt)
-    @hdr[24,16] = MD5::digest(@hdr[24,16] + salt)
-    @hdr[10,10] = "\0" * 10
-    @hdr[26,10] = "\0" * 10
+    if (salt == :template)
+      if @hdr[8,16] > @hdr[24,16]
+        hdr[8,16]  = "\xab\xcd\0\0\0\0\0\0\0\0\0\0\0\0\0\x02"
+        hdr[24,16] = "\xab\xcd\0\0\0\0\0\0\0\0\0\0\0\0\0\x01"
+      else
+        hdr[8,16]  = "\xab\xcd\0\0\0\0\0\0\0\0\0\0\0\0\0\x01"
+        hdr[24,16] = "\xab\xcd\0\0\0\0\0\0\0\0\0\0\0\0\0\x02"
+      end
+    else
+      @hdr[8,16] = MD5::digest(@hdr[8,16] + salt)
+      @hdr[24,16] = MD5::digest(@hdr[24,16] + salt)
+      @hdr[10,10] = "\0" * 10
+      @hdr[26,10] = "\0" * 10
+    end
     checksum!
   end
 
@@ -729,8 +739,18 @@ class IPPacket < NestedPacket
   # Deterministically "randomize" the source and destination IP addresses
   def mangle_ip!(salt)
     return nil if @error
-    @hdr[12,4] = MD5::digest(@hdr[12,4] + salt)[0,4]
-    @hdr[16,4] = MD5::digest(@hdr[16,4] + salt)[0,4]
+    if (salt == :template)
+      if @hdr[12,4] > @hdr[16,4]
+        @hdr[12,4] = "\x0a\0\0\x02"
+        @hdr[16,4] = "\x0a\0\0\x01"
+      else
+        @hdr[12,4] = "\x0a\0\0\x01"
+        @hdr[16,4] = "\x0a\0\0\x02"
+      end
+    else
+      @hdr[12,4] = MD5::digest(@hdr[12,4] + salt)[0,4]
+      @hdr[16,4] = MD5::digest(@hdr[16,4] + salt)[0,4]
+    end
     checksum!
   end
 
@@ -1190,6 +1210,9 @@ class MangleWindow < FXMainWindow
     button_search = FXButton.new(button_list, "Text Search",
       :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
     button_search.connect(SEL_COMMAND) { text_search }
+    button_template = FXButton.new(button_list, "Templatize",
+      :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
+    button_template.connect(SEL_COMMAND) { templatize }
 
     # Left column
     button_list = FXPacker.new(packer, :opts => LAYOUT_FILL_Y |
@@ -1720,6 +1743,15 @@ class MangleWindow < FXMainWindow
     # Now go back and highlight all the new items, then mangle those packets
     set_selected(select_list)
     mangle_ip
+  end
+
+  # Templatize the sent packets (convert to 10.0.0.1 and 10.0.0.2 for IPv4,
+  # abcd::1 and abcd::2 for IPv6)
+  def templatize
+    selected_rows do |i, num|
+      @packets[num].mangle_ip!(:template)
+      @column.setItemText(i, "#{num + 1}: #{@packets[num].inspect}")
+    end
   end
 
 end  # of class MangleWindow
