@@ -364,6 +364,7 @@ class UDPPacket < NestedPacket
 
   # Contribute our piece to unique flow identification
   def flow_id
+    return 'UDP' if @error
     return (@hdr[0] ^ @hdr[2]).to_s + (@hdr[1] + @hdr[3]).to_s(16)
   end
 
