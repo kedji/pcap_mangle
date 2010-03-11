@@ -587,6 +587,22 @@ class IPv6Packet < NestedPacket
     return segs    
   end
 
+  # Pass on TCP state requests to the next level.  If it returns an array,
+  # add an appropriate IP header for RST injection.
+  def tcp_rst
+    return nil if @error or @content.class <= String
+    rst = @content.tcp_rst
+    if rst
+      if rst.length == 1   # TCP is next layer
+        hdr = "\x06\x00\x00\x00\x00\x14\x06\x40" + @hdr[8,32]
+        rst << hdr
+      else
+        rst << @hdr.dup
+      end
+    end
+    rst
+  end
+
 end  # of class IPv6Packet
 
 
@@ -813,7 +829,7 @@ class IPPacket < NestedPacket
   end
 
   # Pass on TCP state requests to the next level.  If it returns an array,
-  # prepend the source and destination IP addresses to it.
+  # add an appropriate IP header for RST injection.
   def tcp_rst
     return nil if @error or @content.class <= String
     rst = @content.tcp_rst
