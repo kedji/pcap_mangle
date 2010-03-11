@@ -22,7 +22,7 @@ include Fox
 # Module for endian/integer conversions
 module EndianMess
 
-  # Net to Ruby Long - Convert a host-byte-order string into a Fixnum
+  # Host to Ruby Long - Convert a host-byte-order string into a Fixnum
   def htorl(str)
     num = 0
     str.reverse.each_byte { |x| num = (num << 8) + x }
@@ -186,6 +186,15 @@ class NestedPacket
     return self.class.to_s + @content.flow_id
   end
 
+  # Pass on TCP state requests to deeper levels, appending headers in
+  # descending order.
+  def tcp_rst
+    return nil if @error or @content.class <= String
+    rst = @content.tcp_rst
+    rst << @hdr if rst
+    return rst
+  end
+
   # Insert GRE encapsulation in the first layer-2 header
   def gre_tunnel!(ip_hdr)
     return '' if @error or @content.class <= String
@@ -300,6 +309,14 @@ class TCPPacket < NestedPacket
       segments << TCPPacket.new(synth + payload[i,1])
     end
     return segments
+  end
+
+  # Return a copy of our header, already adjusted for injection.
+  def tcp_rst
+    hdr = @hdr[0,20]
+    hdr[4,4] = rlton(ntorl(@hdr[4,4]) + @content.length)
+    hdr[12,2] = "\x50\x14"  # 20 byte packet, RST + ACK flags set
+    [ hdr ]
   end
 
 end  # of class TCPPacket
@@ -795,6 +812,23 @@ class IPPacket < NestedPacket
     @hdr[3] = total_length & 0xFF
   end
 
+  # Pass on TCP state requests to the next level.  If it returns an array,
+  # prepend the source and destination IP addresses to it.
+  def tcp_rst
+    return nil if @error or @content.class <= String
+    rst = @content.tcp_rst
+    if rst
+      if rst.length == 1   # TCP is next layer
+        hdr = "\x45\x00\x00\x28\x1e\xe7\x00\x00\x80\x06\xFF\xFF" +
+              @hdr[12,8]
+        rst << hdr
+      else
+        rst << @hdr.dup
+      end
+    end
+    rst
+  end
+
 end  # of class IPPacket
 
 
@@ -1000,6 +1034,12 @@ class Packet < NestedPacket
       # Now get the payload of this frame
       payload = src.read(cap_len)
       @content = EthernetPacket.new(payload)
+
+    # Or read from a string directly
+    elsif src.class <= String
+      @content = EthernetPacket.new(src)
+      @time_offset = 0.0
+      @orig_len = src.length
 
     # Or copy ourselves from another Packet instance...
     elsif src.class == Packet
@@ -1213,6 +1253,9 @@ class MangleWindow < FXMainWindow
     button_template = FXButton.new(button_list, "Templatize",
       :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
     button_template.connect(SEL_COMMAND) { templatize }
+    button_terminate = FXButton.new(button_list, "Terminate",
+      :opts => LAYOUT_SIDE_TOP | FRAME_RAISED | FRAME_THICK | LAYOUT_FILL_X)
+    button_terminate.connect(SEL_COMMAND) { terminate }
 
     # Left column
     button_list = FXPacker.new(packer, :opts => LAYOUT_FILL_Y |
@@ -1513,8 +1556,8 @@ class MangleWindow < FXMainWindow
     flows = {}
 
     # First build our follow hash
-    selected_rows do |i,_|
-      flow = @packets[@column.getItemText(i).to_i - 1].flow_id
+    selected_rows do |i,num|
+      flow = @packets[num].flow_id
       flows[flow] = true
     end
     return nil if flows.empty?
@@ -1751,6 +1794,46 @@ class MangleWindow < FXMainWindow
     selected_rows do |i, num|
       @packets[num].mangle_ip!(:template)
       @column.setItemText(i, "#{num + 1}: #{@packets[num].inspect}")
+    end
+  end
+
+  # Terminate (with an RST) all of the flows of any of the currently
+  # selected packets.
+  def terminate
+    flows = {}
+
+    # First build our follow hash, keeping track of src, dst, ports, seq
+    # and ack of the last seen packet within each flow.
+    selected_rows do |i,num|
+      flow = @packets[num].flow_id
+      rst = @packets[num].tcp_rst
+      if rst
+        rst << i
+        flows[flow] = rst
+      end
+    end
+    return nil if flows.empty?
+
+    # Next, order the trailing packets for each flow
+    states = []
+    flows.each do |_,rst|
+      indx = rst.pop
+      states << [ indx, rst ]
+    end
+    states = states.sort.reverse
+
+    # Now create the reset packets at the end of our packet list
+    # State objects are in the form:  [ src, dst, sport, dport, seq, ack ]
+    states.each do |i, rst|
+      i += 1
+      @packets << Packet.new(rst.reverse.join, nil)
+      @packets.last.checksum!
+      pkt_text = "#{@packets.length}: #{@packets.last.inspect}"
+      if i == @column.numItems
+        @column.appendItem(pkt_text)
+      else
+        @column.insertItem(i, FXListItem.new(pkt_text))
+      end
     end
   end
 
