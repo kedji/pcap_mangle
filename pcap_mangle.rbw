@@ -1759,14 +1759,23 @@ class MangleWindow < FXMainWindow
 
   # Adjust the timestamp (seconds)
   def adjust_time_delta
-    pkt = nil
-    selected_rows do |i, num|
-      pkt = @packets[num]
-      break
-    end
+    pkt = []
+    selected_rows { |i, num| pkt << @packets[num] }
+
+    # If many packets are selected, adjust the timestamp for all of them
+    if pkt.length > 1
+      text = ""
+      InputDialog.new(self, "Delta (ms):", text).execute
+      return nil if text.empty?
+      delta = text.to_f / 1000
+      selected_rows do |i, num|
+        pkt = @packets[num]
+        pkt.time_offset = delta
+      end
 
     # Did we find a selected packet?  If so, adjust its timestamp
-    if pkt
+    elsif pkt.length == 1
+      pkt = pkt.first
       text = (1000 * pkt.time_offset).to_s
       InputDialog.new(self, "Delta (ms):", text).execute
       return nil if text.empty?
